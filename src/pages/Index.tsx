@@ -14,7 +14,7 @@ const Index = () => {
   const {
     status: livekitStatus,
     error: livekitError,
-    transcripts,
+    transcriptText,
     connect,
     disconnect,
   } = useLiveKitRoom();
@@ -59,7 +59,7 @@ const Index = () => {
         )}
         {livekitError ? <span className="text-destructive">{livekitError}</span> : null}
       </div>
-      <TranscriptPanel lines={transcripts} />
+      <TranscriptPanel transcriptText={transcriptText} />
       <FactCheckSidebar flags={visibleFlags} />
     </main>
   );

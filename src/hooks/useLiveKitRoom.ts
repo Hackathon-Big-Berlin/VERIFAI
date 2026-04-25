@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Room, RoomEvent, type RemoteParticipant } from "livekit-client";
-import type { TranscriptLine } from "@/lib/types";
 
 // Shape of the JSON we publish from the Python agent (see backend/src/agent.py).
 // Frontend renders transcripts live; flag verdicts will land here too once Lukas's stream is wired.
@@ -11,14 +10,12 @@ type DataChannelMessage =
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
 
-const SPEAKER_LABEL = "Speaker";
-
-function formatTimestamp(date: Date): string {
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL as string | undefined;
 const LIVEKIT_TOKEN = import.meta.env.VITE_LIVEKIT_TOKEN as string | undefined;
+
+function joinTranscriptText(finalText: string, interimText: string): string {
+  return [finalText, interimText].filter(Boolean).join(" ").trim();
+}
 
 // Connect to a LiveKit room, publish the mic, and log every Data Channel
 // message received from the Python agent. Returns a connect/disconnect API
@@ -27,10 +24,8 @@ export function useLiveKitRoom() {
   const roomRef = useRef<Room | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [transcripts, setTranscripts] = useState<TranscriptLine[]>([]);
-  // Track whether the last appended line is still interim — if so, replace it
-  // on the next event instead of appending a fresh row. Reset on each `is_final: true`.
-  const pendingLineIdRef = useRef<string | null>(null);
+  const [transcriptText, setTranscriptText] = useState("");
+  const finalizedTranscriptRef = useRef("");
 
   const connect = useCallback(async () => {
     if (!LIVEKIT_URL || !LIVEKIT_TOKEN) {
@@ -48,6 +43,8 @@ export function useLiveKitRoom() {
 
     setStatus("connecting");
     setError(null);
+    finalizedTranscriptRef.current = "";
+    setTranscriptText("");
 
     const room = new Room({
       // Auto-tune mic settings for speech use case
@@ -79,42 +76,12 @@ export function useLiveKitRoom() {
           typeof (message as { text?: unknown }).text === "string"
         ) {
           const transcript = message as { type: "transcript"; text: string; is_final: boolean };
-          setTranscripts((previousLines) => {
-            const nextLines = [...previousLines];
-            const trailing = nextLines[nextLines.length - 1];
-            const isUpdatingPending =
-              pendingLineIdRef.current !== null &&
-              trailing !== undefined &&
-              trailing.id === pendingLineIdRef.current;
 
-            if (isUpdatingPending) {
-              // Same utterance, newer text — overwrite the trailing pending line.
-              nextLines[nextLines.length - 1] = {
-                ...trailing,
-                text: transcript.text,
-              };
-            } else {
-              // New utterance — start a new line and remember its id so future
-              // interim updates target it.
-              const newLineId =
-                typeof crypto !== "undefined" && "randomUUID" in crypto
-                  ? crypto.randomUUID()
-                  : `line-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-              pendingLineIdRef.current = newLineId;
-              nextLines.push({
-                id: newLineId,
-                timestamp: formatTimestamp(new Date()),
-                speaker: SPEAKER_LABEL,
-                text: transcript.text,
-              });
-            }
-
-            return nextLines;
-          });
-
-          // Final transcript closes the pending utterance — next event starts a fresh line.
           if (transcript.is_final) {
-            pendingLineIdRef.current = null;
+            finalizedTranscriptRef.current = joinTranscriptText(finalizedTranscriptRef.current, transcript.text);
+            setTranscriptText(finalizedTranscriptRef.current);
+          } else {
+            setTranscriptText(joinTranscriptText(finalizedTranscriptRef.current, transcript.text));
           }
         }
       },
@@ -155,5 +122,5 @@ export function useLiveKitRoom() {
     };
   }, []);
 
-  return { status, error, transcripts, connect, disconnect };
+  return { status, error, transcriptText, connect, disconnect };
 }
