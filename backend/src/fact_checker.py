@@ -2,12 +2,14 @@ import asyncio
 import time
 import os
 import json
+import logging
 import dotenv
 from typing import List, Dict, Any
 from tavily import AsyncTavilyClient
 from google import genai
 
 dotenv.load_dotenv()
+logger = logging.getLogger("agent")
 
 # Constants
 GEMINI_MODEL_NAME = 'gemini-3.1-flash-lite-preview'
@@ -102,6 +104,14 @@ async def _process_single_claim(claim: str, tavily_client: AsyncTavilyClient, ge
         response = await gemini_client.aio.models.generate_content(
             model=GEMINI_MODEL_NAME, 
             contents=final_prompt
+        )
+
+        # Debug visibility: emit Gemini raw fact-check output on every run.
+        raw_fact_check_output = response.text if response and response.text else ""
+        logger.debug(
+            "[FACT_CHECK][GEMINI_RAW_OUTPUT] claim=%s output=%s",
+            claim,
+            raw_fact_check_output,
         )
         
         # 3. Parse and Validate JSON
