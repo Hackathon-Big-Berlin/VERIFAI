@@ -59,10 +59,14 @@ async def my_agent(ctx: JobContext):
     context_window: str = ""
     context_version = 0
     fact_check_queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
-    # Dedup key = "claim|verdict". Same shape as the frontend's dedup so we
-    # don't even bother sending repeats — the rolling context window means the
-    # pipeline re-extracts the same claim on every final transcript.
-    published_claims: set[str] = set()
+    # Dedup key = normalized claim (lowercased, stripped of punctuation/space).
+    # Maps to the last verdict we published for that claim; we only re-publish
+    # when the verdict changes, and the frontend replaces the existing card.
+    # Matches the frontend's normalizeClaim() exactly.
+    published_verdicts: dict[str, str] = {}
+
+    def normalize_claim(text: str) -> str:
+        return text.lower().strip(" \t\r\n.,!?;:'\"`-")
 
     # STEP 3 — run the pipeline and publish each successful, novel verdict
     # to the data channel as topic="flag". Frontend's useLiveKitRoom hook
@@ -94,10 +98,12 @@ async def my_agent(ctx: JobContext):
                         continue
                     claim = result.get("claim", "")
                     verdict = result.get("verdict", "")
-                    key = f"{claim}|{verdict}"
-                    if key in published_claims:
+                    norm = normalize_claim(claim)
+                    if not norm:
                         continue
-                    published_claims.add(key)
+                    if published_verdicts.get(norm) == verdict:
+                        continue  # same claim, same verdict — already shown
+                    published_verdicts[norm] = verdict
 
                     flag_payload = json.dumps(
                         {

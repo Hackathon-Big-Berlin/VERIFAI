@@ -106,11 +106,11 @@ export function TranscriptPanel({ sessions, flags, isLive }: TranscriptPanelProp
               const isActive = isLive && index === sessions.length - 1;
               const hasPending = session.pendingText.length > 0;
               const hasAnyText = session.text.length > 0 || hasPending;
-              // Apply highlights only to the active session — older sessions
-              // freeze in place. Claims published after the user starts a new
-              // session won't retroactively colour the prior one.
-              const sessionFlags = isActive ? flags : [];
-              const highlightedText = renderHighlightedTranscript(session.text, sessionFlags);
+              // Apply every flag to every session — the substring match
+              // naturally selects whichever session contains the claim text.
+              // Highlights persist after disconnect because they're driven by
+              // the flags array, not by `isActive`.
+              const highlightedText = renderHighlightedTranscript(session.text, flags);
 
               return (
                 <article

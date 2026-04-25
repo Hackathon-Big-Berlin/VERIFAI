@@ -21,7 +21,10 @@ export function FactCheckSidebar({ flags }: FactCheckSidebarProps) {
               No claims flagged yet.
             </div>
           ) : (
-            flags.map((flag) => <FactCheckCard key={`${flag.claim}|${flag.verdict}`} flag={flag} />)
+            // Newest first so the latest fact-check appears at the top.
+            [...flags].reverse().map((flag) => (
+              <FactCheckCard key={`${flag.claim}|${flag.verdict}`} flag={flag} />
+            ))
           )}
         </div>
       </ScrollArea>
