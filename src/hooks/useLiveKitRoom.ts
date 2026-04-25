@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createLocalAudioTrack, LocalAudioTrack, Room, RoomEvent, type RemoteParticipant } from "livekit-client";
+import {
+  createLocalAudioTrack,
+  LocalAudioTrack,
+  Room,
+  RoomEvent,
+  Track,
+  type RemoteParticipant,
+  type TranscriptionSegment,
+} from "livekit-client";
 
 // Shape of the JSON we publish from the Python agent (see backend/src/agent.py).
 // Frontend renders transcripts live; flag verdicts will land here too once Lukas's stream is wired.
@@ -27,6 +35,18 @@ export function useLiveKitRoom() {
   const [error, setError] = useState<string | null>(null);
   const [transcriptText, setTranscriptText] = useState("");
   const finalizedTranscriptRef = useRef("");
+
+  const applyTranscript = useCallback((text: string, isFinal: boolean) => {
+    const trimmedText = text.trim();
+    if (!trimmedText) return;
+
+    if (isFinal) {
+      finalizedTranscriptRef.current = joinTranscriptText(finalizedTranscriptRef.current, trimmedText);
+      setTranscriptText(finalizedTranscriptRef.current);
+    } else {
+      setTranscriptText(joinTranscriptText(finalizedTranscriptRef.current, trimmedText));
+    }
+  }, []);
 
   const connect = useCallback(async () => {
     if (!LIVEKIT_URL || !LIVEKIT_TOKEN) {
@@ -93,16 +113,37 @@ export function useLiveKitRoom() {
           typeof (message as { text?: unknown }).text === "string"
         ) {
           const transcript = message as { type: "transcript"; text: string; is_final: boolean };
-
-          if (transcript.is_final) {
-            finalizedTranscriptRef.current = joinTranscriptText(finalizedTranscriptRef.current, transcript.text);
-            setTranscriptText(finalizedTranscriptRef.current);
-          } else {
-            setTranscriptText(joinTranscriptText(finalizedTranscriptRef.current, transcript.text));
-          }
+          applyTranscript(transcript.text, transcript.is_final);
         }
       },
     );
+
+    room.on(
+      RoomEvent.TranscriptionReceived,
+      (segments: TranscriptionSegment[], participant, publication) => {
+        console.log("[livekit transcription]", {
+          from: participant?.identity,
+          trackSource: publication?.source,
+          segments,
+        });
+
+        for (const segment of segments) {
+          applyTranscript(segment.text, segment.final);
+        }
+      },
+    );
+
+    room.on(RoomEvent.LocalTrackPublished, (publication) => {
+      console.log("[livekit] local track published", {
+        source: publication.source,
+        kind: publication.kind,
+        muted: publication.isMuted,
+      });
+    });
+
+    room.on(RoomEvent.ParticipantConnected, (participant) => {
+      console.log("[livekit] participant connected", participant.identity);
+    });
 
     room.on(RoomEvent.Disconnected, () => {
       console.log("[livekit] disconnected");
@@ -115,7 +156,10 @@ export function useLiveKitRoom() {
     try {
       await room.connect(LIVEKIT_URL, LIVEKIT_TOKEN);
       // Publish the local mic so the agent has audio to transcribe.
-      await room.localParticipant.publishTrack(localAudioTrack);
+      await room.localParticipant.publishTrack(localAudioTrack, {
+        source: Track.Source.Microphone,
+        name: "microphone",
+      });
       roomRef.current = room;
       setStatus("connected");
       console.log("[livekit] connected as", room.localParticipant.identity);
