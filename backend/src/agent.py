@@ -73,7 +73,7 @@ async def my_agent(ctx: JobContext):
     # browser microphone audio and publish transcript events back to the frontend.
     await ctx.connect()
 
-    #Mock Fact Check Stream
+    #Mock Fact Check StreamL
     # We now dispatch that external function as a background task.
     mock_task = asyncio.create_task(mock_stream.start_mock_fact_check_stream(ctx, logger))
     

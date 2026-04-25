@@ -13,28 +13,28 @@ async def start_mock_fact_check_stream(ctx: JobContext, logger: logging.Logger):
     mock_payloads = [
         {
             "type": "flag",
-            "claim": "The global economy is actually projected to grow by 5.2% this year.",
+            "claim": "This came through via the server!!",
             "verdict": "FALSE",
             "reasoning": "Global growth is projected at 3.1% according to the IMF.",
             "sources": ["https://www.imf.org/en/Publications/WEO"]
         },
         {
             "type": "flag",
-            "claim": "Last year, for the first time in history, the United States became a net exporter of solar panels to the European Union.",
+            "claim": "This came through via the server!!",
             "verdict": "TRUE",
             "reasoning": "US solar panel exports to the EU exceeded imports for the first time in 2023.",
             "sources": ["https://www.eia.gov/todayinenergy/"]
         },
         {
             "type": "flag",
-            "claim": "Domestic oil production has increased by 20% since the start of the conflict.",
+            "claim": "This came through via the server!!",
             "verdict": "PARTIALLY TRUE",
             "reasoning": "Production has increased, but only by 12%, not 20%.",
             "sources": ["https://www.eia.gov/dnav/pet/pet_crd_crpdn_adc_mbblpd_m.htm"]
         },
         {
             "type": "flag",
-            "claim": "The new trade agreement will create 500,000 jobs in the manufacturing sector.",
+            "claim": "This came through via the server!!",
             "verdict": "INCONCLUSIVE",
             "reasoning": "Economic projections vary widely, and no consensus exists on the exact job creation numbers.",
             "sources": []

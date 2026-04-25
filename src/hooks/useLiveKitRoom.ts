@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ParticipantKind, Room, RoomEvent, type RemoteParticipant } from "livekit-client";
-import type { TranscriptSession } from "@/lib/types";
+import type { TranscriptSession, FactCheckFlag } from "@/lib/types";
 
 // Shape of the JSON we publish from the Python agent (see backend/src/agent.py).
 // Frontend renders transcripts live; flag verdicts will land here too once Lukas's stream is wired.
 type DataChannelMessage =
   | { type: "transcript"; text: string; is_final: boolean }
-  | { type: "flag"; sentence: string; verdict: string; reason: string; source: string }
+  | { type: "flag"; claim: string; verdict: string; reasoning: string; sources: string[] }
   | Record<string, unknown>;
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
@@ -32,6 +32,7 @@ export function useLiveKitRoom() {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<TranscriptSession[]>([]);
+  const [flags, setFlags] = useState<FactCheckFlag[]>([]);
 
   // Establish the underlying LiveKit room connection once and keep it open
   // for the page lifetime. This avoids the dispatch cold-start delay every
@@ -99,6 +100,23 @@ export function useLiveKitRoom() {
 
             nextSessions[nextSessions.length - 1] = currentSession;
             return nextSessions;
+          });        
+        }
+
+        // Added: Catch the mock/real fact-check flags using the 'claim' key contract
+        // Logical process: Deduplicate based on a combined claim+verdict key so re-published identical flags don't duplicate in the UI.
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          "type" in message &&
+          message.type === "flag" &&
+          typeof (message as { claim?: unknown }).claim === "string"
+        ) {
+          const flagMessage = message as FactCheckFlag;
+          setFlags((prev) => {
+            const key = `${flagMessage.claim}|${flagMessage.verdict}`;
+            if (prev.some((f) => `${f.claim}|${f.verdict}` === key)) return prev;
+            return [...prev, flagMessage];
           });
         }
       },
@@ -184,5 +202,5 @@ export function useLiveKitRoom() {
     };
   }, []);
 
-  return { status, error, sessions, connect, disconnect };
+  return { status, error, sessions, flags, connect, disconnect };
 }
