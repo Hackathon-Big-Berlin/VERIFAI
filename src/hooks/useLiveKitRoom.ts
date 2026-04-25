@@ -21,6 +21,13 @@ function newSessionId(): string {
     : `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+// Match the backend's normalization (agent.py:normalize_claim) so dedup keys
+// agree on both ends. Same claim with different trailing punctuation/case is
+// treated as one claim; verdict updates replace the existing card.
+function normalizeClaim(claim: string): string {
+  return claim.toLowerCase().replace(/^[\s.,!?;:'"`-]+|[\s.,!?;:'"`-]+$/g, "");
+}
+
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL as string | undefined;
 const LIVEKIT_TOKEN = import.meta.env.VITE_LIVEKIT_TOKEN as string | undefined;
 
@@ -118,8 +125,9 @@ export function useLiveKitRoom() {
           });        
         }
 
-        // Added: Catch the mock/real fact-check flags using the 'claim' key contract
-        // Logical process: Deduplicate based on a combined claim+verdict key so re-published identical flags don't duplicate in the UI.
+        // Real fact-check flags. Dedup by normalized claim so verdict
+        // changes for the same claim REPLACE the existing card instead of
+        // appending a duplicate.
         if (
           typeof message === "object" &&
           message !== null &&
@@ -129,8 +137,14 @@ export function useLiveKitRoom() {
         ) {
           const flagMessage = message as FactCheckFlag;
           setFlags((prev) => {
-            const key = `${flagMessage.claim}|${flagMessage.verdict}`;
-            if (prev.some((f) => `${f.claim}|${f.verdict}` === key)) return prev;
+            const incoming = normalizeClaim(flagMessage.claim);
+            const idx = prev.findIndex((f) => normalizeClaim(f.claim) === incoming);
+            if (idx >= 0) {
+              if (prev[idx].verdict === flagMessage.verdict) return prev;
+              const next = [...prev];
+              next[idx] = flagMessage;
+              return next;
+            }
             return [...prev, flagMessage];
           });
         } else {
@@ -219,12 +233,13 @@ export function useLiveKitRoom() {
     }
   }, [ensureRoomConnected]);
 
-  // Disconnect just mutes the mic — the LiveKit room and the agent stay live
-  // so the next Connect is instant. The current session block freezes in place.
+  // Fully leave the room so the agent's close_on_disconnect fires and the
+  // backend's delete_room_on_close=True tears the room down. That lets the
+  // next Connect create a fresh room and re-dispatch the agent automatically.
   const disconnect = useCallback(async () => {
     console.log("[livekit] disconnect requested");
-    await roomRef.current?.localParticipant.setMicrophoneEnabled(false);
-    console.log("[livekit] microphone disabled");
+    await roomRef.current?.disconnect();
+    roomRef.current = null;
     setStatus("idle");
   }, []);
 

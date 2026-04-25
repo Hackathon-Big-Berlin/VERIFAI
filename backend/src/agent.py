@@ -59,24 +59,96 @@ async def my_agent(ctx: JobContext):
     context_window: str = ""
     context_version = 0
     fact_check_queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
+    # Dedup key = normalized claim (lowercased, stripped of punctuation/space).
+    # Maps to the last verdict we published for that claim; we only re-publish
+    # when the verdict changes, and the frontend replaces the existing card.
+    # Matches the frontend's normalizeClaim() exactly.
+    published_verdicts: dict[str, str] = {}
 
+    def normalize_claim(text: str) -> str:
+        return text.lower().strip(" \t\r\n.,!?;:'\"`-")
+
+    # STEP 3 — run the pipeline and publish each successful, novel verdict
+    # to the data channel as topic="flag". Frontend's useLiveKitRoom hook
+    # picks these up and routes them into the side panel + transcript.
     async def fact_check_worker():
         while True:
             version, context_snapshot = await fact_check_queue.get()
             try:
-                logger.info("Running fact check worker")
+                logger.info(
+                    "[worker] received version=%s snapshot=%r",
+                    version,
+                    context_snapshot[:120],
+                )
+                logger.info("[worker] calling pipeline version=%s", version)
                 results = await run_fact_check_pipeline(context_snapshot)
                 logger.info(
-                    "fact-check results (context_version=%s): %s",
+                    "[worker] pipeline returned version=%s n_results=%s",
                     version,
-                    json.dumps(results),
+                    len(results),
+                )
+                logger.info(
+                    "[worker] pipeline result version=%s:\n%s",
+                    version,
+                    json.dumps(results, indent=2),
+                )
+
+                for result in results:
+                    if result.get("status") != "success":
+                        continue
+                    claim = result.get("claim", "")
+                    verdict = result.get("verdict", "")
+                    norm = normalize_claim(claim)
+                    if not norm:
+                        continue
+                    if published_verdicts.get(norm) == verdict:
+                        continue  # same claim, same verdict — already shown
+                    published_verdicts[norm] = verdict
+
+                    flag_payload = json.dumps(
+                        {
+                            "type": "flag",
+                            "claim": claim,
+                            "verdict": verdict,
+                            "reasoning": result.get("reasoning", ""),
+                            "sources": result.get("sources", []),
+                        }
+                    ).encode("utf-8")
+
+                    try:
+                        await ctx.room.local_participant.publish_data(
+                            flag_payload, reliable=True, topic="flag"
+                        )
+                        logger.info(
+                            "[worker] published flag verdict=%s claim=%r",
+                            verdict,
+                            claim[:80],
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[worker] failed to publish flag claim=%r",
+                            claim[:80],
+                        )
+            except asyncio.CancelledError as e:
+                # Diagnostic: a single bad Gemini call shouldn't kill the
+                # worker forever. Log the underlying cause and keep looping
+                # so subsequent queue items still get processed.
+                logger.warning(
+                    "[worker] cancellation received version=%s cause=%r — keeping worker alive",
+                    version,
+                    e.__cause__,
                 )
             except Exception:
-                logger.exception("fact-check pipeline failed (context_version=%s)", version)
+                logger.exception("[worker] failed version=%s", version)
             finally:
                 fact_check_queue.task_done()
 
     fact_check_worker_task = asyncio.create_task(fact_check_worker())
+
+    # STEP 2 self-test: a checkable false claim so we can see the full
+    # pipeline (claim extraction → search → verdict) light up on dispatch
+    # without depending on the user speaking.
+    fact_check_queue.put_nowait((-1, "The capital of France is Berlin."))
 
     def forward_transcript_to_data_channel(event):
         nonlocal context_window, context_version
@@ -121,41 +193,22 @@ async def my_agent(ctx: JobContext):
         # browser microphone audio and publish transcript events back to the frontend.
         await ctx.connect()
 
-        # Start the session, which initializes the voice pipeline and warms up the models
         await session.start(
-            agent=Agent(instructions="Transcribe user speech. Do not respond."),
-            room=ctx.room,
-            room_options=room_io.RoomOptions(
-                audio_input=room_io.AudioInputOptions(
-                    noise_cancellation=ai_coustics.audio_enhancement(
-                        # QUAIL_VF_L  → best for single foreground speaker (your case)
-                        # QUAIL_L     → better if you ever need multi-speaker / diarization
-                        model=ai_coustics.EnhancerModel.QUAIL_VF_L,
-
-                        # enhancement_level controls suppression aggressiveness:
-                        #   0.5 = conservative — always preserves foreground speech, minimal artifacts
-                        #   0.8 = balanced    — optimal WER on challenging real-world data (recommended)
-                        #   1.0 = aggressive  — maximum suppression, risk of over-filtering quiet speech
-                        model_parameters=ai_coustics.ModelParameters(enhancement_level=0.8),
-
-                        # VAD settings tune how the model detects speech boundaries
-                        vad_settings=ai_coustics.VadSettings(
-                            # How long (seconds) to keep VAD "on" after speech ends — prevents clipping
-                            # Range: 0.0–1.0s  |  Lower = tighter turn-taking, Higher = less cutoff
-                            speech_hold_duration=0.03,
-
-                            # How sensitive VAD is to speech vs noise
-                            # Range: 1.0–15.0  |  Higher = more sensitive (catches whispers, but more false triggers)
-                            sensitivity=6.0,
-
-                            # Minimum duration (seconds) before a segment is treated as speech
-                            # Range: 0.0–1.0s  |  Raise this to filter out very short utterances/clicks
-                            minimum_speech_duration=0.0,
+                agent=Agent(instructions="Transcribe user speech. Do not respond."),
+                room=ctx.room,
+                room_options=room_io.RoomOptions(
+                    # Tear down the room when the user disconnects so the next
+                    # Connect creates a fresh room and re-triggers agent dispatch
+                    # (rooms otherwise linger ~5min on LiveKit Cloud and reconnecting
+                    # joins the existing room without dispatching the agent).
+                    delete_room_on_close=True,
+                    audio_input=room_io.AudioInputOptions(
+                        noise_cancellation=ai_coustics.audio_enhancement(
+                            model=ai_coustics.EnhancerModel.QUAIL_VF_L
                         ),
                     ),
                 ),
-            ),
-        )
+            )
     finally:
         fact_check_worker_task.cancel()
         await asyncio.gather(fact_check_worker_task, return_exceptions=True)
