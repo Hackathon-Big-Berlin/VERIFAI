@@ -1,3 +1,5 @@
+import asyncio
+import json
 import logging
 
 from dotenv import load_dotenv
@@ -32,6 +34,45 @@ async def my_agent(ctx: JobContext):
         stt=inference.STT(model="deepgram/nova-3", language="multi"),
     )
 
+    # 👉 changes start here 👇
+    # TruWord delivery stream: forward every Deepgram transcript event to the
+    # LiveKit Data Channel as JSON so the frontend can render it (and later we
+    # can layer in fact-check verdicts on the same channel under a different topic).
+    # Keep strong refs to in-flight publish tasks so they aren't GC'd before completing.
+    pending_publishes: set[asyncio.Task] = set()
+
+    def forward_transcript_to_data_channel(event):
+        # session.on(...) callbacks are sync, but publish_data is async.
+        # Schedule the publish on the running event loop so we don't block.
+        payload = json.dumps(
+            {
+                "type": "transcript",
+                "text": event.transcript,
+                "is_final": event.is_final,
+            }
+        ).encode("utf-8")
+
+        async def _publish():
+            await ctx.room.local_participant.publish_data(
+                payload, reliable=True, topic="transcript"
+            )
+            logger.info(
+                "published transcript (final=%s): %s",
+                event.is_final,
+                event.transcript[:80],
+            )
+
+        task = asyncio.create_task(_publish())
+        pending_publishes.add(task)
+        task.add_done_callback(pending_publishes.discard)
+
+    session.on("user_input_transcribed", forward_transcript_to_data_channel)
+    # 👆 changes end here 👆
+
+    # Join the room before starting the voice pipeline so the agent can receive
+    # browser microphone audio and publish transcript events back to the frontend.
+    await ctx.connect()
+
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
         agent=Agent(instructions="Transcribe user speech. Do not respond."),
@@ -47,9 +88,6 @@ async def my_agent(ctx: JobContext):
             ),
         ),
     )
-
-    # Join the room and connect to the user
-    await ctx.connect()
 
 
 if __name__ == "__main__":
