@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Room, RoomEvent, type RemoteParticipant } from "livekit-client";
+import { ParticipantKind, Room, RoomEvent, type RemoteParticipant } from "livekit-client";
 import type { TranscriptLine } from "@/lib/types";
 
 // Shape of the JSON we publish from the Python agent (see backend/src/agent.py).
@@ -120,6 +120,22 @@ export function useLiveKitRoom() {
       },
     );
 
+    room.on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
+      console.log("[livekit] participant connected", {
+        identity: participant.identity,
+        kind: participant.kind,
+      });
+    });
+
+    room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+      console.log("[livekit] remote track subscribed", {
+        identity: participant.identity,
+        kind: participant.kind,
+        source: publication.source,
+        trackKind: track.kind,
+      });
+    });
+
     room.on(RoomEvent.Disconnected, () => {
       console.log("[livekit] disconnected");
       setStatus("idle");
@@ -128,6 +144,12 @@ export function useLiveKitRoom() {
 
     try {
       await room.connect(LIVEKIT_URL, LIVEKIT_TOKEN);
+      const agentParticipant = Array.from(room.remoteParticipants.values()).find(
+        (participant) => participant.kind === ParticipantKind.AGENT,
+      );
+      if (!agentParticipant) {
+        console.warn("[livekit] connected, but no agent participant has joined yet");
+      }
       // Publish the local mic so the agent has audio to transcribe.
       await room.localParticipant.setMicrophoneEnabled(true);
       roomRef.current = room;
