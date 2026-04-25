@@ -1,14 +1,24 @@
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { TranscriptSession } from "@/lib/types";
+import type { FactCheckFlag, TranscriptSession } from "@/lib/types";
+import { HighlightedTranscript } from "./HighlightedTranscript";
 
 type TranscriptPanelProps = {
   sessions: TranscriptSession[];
   // Whether the most recent session is still receiving transcripts. Drives
   // the "Listening" indicator and styles the active block.
   isLive: boolean;
+  // All fact-check flags. Each session block only renders flags whose
+  // `sessionId` matches its id (or has no sessionId — global match).
+  flags: FactCheckFlag[];
 };
 
-export function TranscriptPanel({ sessions, isLive }: TranscriptPanelProps) {
+function flagsForSession(allFlags: FactCheckFlag[], sessionId: string): FactCheckFlag[] {
+  return allFlags.filter(
+    (flag) => flag.sessionId === undefined || flag.sessionId === sessionId,
+  );
+}
+
+export function TranscriptPanel({ sessions, isLive, flags }: TranscriptPanelProps) {
   return (
     <section className="flex min-h-0 flex-1 flex-col border-b border-border bg-background lg:border-b-0 lg:border-r">
       <header className="flex items-center justify-between border-b border-border px-4 py-4 md:px-6">
@@ -34,6 +44,7 @@ export function TranscriptPanel({ sessions, isLive }: TranscriptPanelProps) {
               const isActive = isLive && index === sessions.length - 1;
               const hasPending = session.pendingText.length > 0;
               const hasAnyText = session.text.length > 0 || hasPending;
+              const sessionFlags = flagsForSession(flags, session.id);
 
               return (
                 <article
@@ -51,7 +62,7 @@ export function TranscriptPanel({ sessions, isLive }: TranscriptPanelProps) {
 
                   {hasAnyText ? (
                     <p className="text-base leading-7 text-foreground md:text-lg">
-                      {session.text}
+                      <HighlightedTranscript text={session.text} flags={sessionFlags} />
                       {hasPending ? (
                         <>
                           {session.text ? " " : ""}

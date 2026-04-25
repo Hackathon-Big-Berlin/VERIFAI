@@ -1,39 +1,41 @@
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
 import { FactCheckSidebar } from "@/components/sidepanel/FactCheckSidebar";
 import { TranscriptPanel } from "@/components/transcript/TranscriptPanel";
-import { getMockFactCheckFlags } from "@/lib/mockdata/fact-checks";
-import type { FactCheckFlag } from "@/lib/types";
+import { DEMO_SESSION_ID, getMockFactCheckFlags } from "@/lib/mockdata/fact-checks";
+import { getMockTranscriptLines } from "@/lib/mockdata/transcript";
+import type { TranscriptSession } from "@/lib/types";
 import { useLiveKitRoom } from "@/hooks/useLiveKitRoom";
 
-// Mock fact-check flags still ship until Lukas's Gemini stream is wired in.
-const factCheckFlags = getMockFactCheckFlags();
+// Demo session pre-populated with a mock transcript so the highlighting
+// design is visible the moment the page loads — even without the agent
+// running. Real sessions append below it once the user clicks Connect.
+const DEMO_SESSION: TranscriptSession = {
+  id: DEMO_SESSION_ID,
+  startedAt: "demo",
+  text: getMockTranscriptLines()
+    .map((line) => line.text)
+    .join(" "),
+  pendingText: "",
+};
+
+const MOCK_FLAGS = getMockFactCheckFlags();
 
 const Index = () => {
-  const [visibleFlags, setVisibleFlags] = useState<FactCheckFlag[]>([]);
   // LiveKit connection — browser mic → agent (Deepgram STT) → data channel → these state vars.
   const {
     status: livekitStatus,
     error: livekitError,
-    sessions,
+    sessions: liveSessions,
     connect,
     disconnect,
   } = useLiveKitRoom();
 
-  // Temporary: drip-feed mock fact-check flags so the sidebar isn't empty during dev.
-  // Remove this once Lukas's `flag` payloads start arriving on the data channel.
-  useEffect(() => {
-    let currentIndex = 0;
-    const intervalId = window.setInterval(() => {
-      const nextFlag = factCheckFlags[currentIndex];
-      if (!nextFlag) {
-        window.clearInterval(intervalId);
-        return;
-      }
-      setVisibleFlags((currentFlags) => [...currentFlags, nextFlag]);
-      currentIndex += 1;
-    }, 4000);
-    return () => window.clearInterval(intervalId);
-  }, []);
+  // Demo first, live sessions after. The demo block stays so designers /
+  // teammates can always see the highlight design even mid-session.
+  const sessionsForPanel = useMemo(
+    () => [DEMO_SESSION, ...liveSessions],
+    [liveSessions],
+  );
 
   return (
     <main className="flex min-h-screen flex-col bg-background text-foreground lg:flex-row">
@@ -59,8 +61,12 @@ const Index = () => {
         )}
         {livekitError ? <span className="text-destructive">{livekitError}</span> : null}
       </div>
-      <TranscriptPanel sessions={sessions} isLive={livekitStatus === "connected"} />
-      <FactCheckSidebar flags={visibleFlags} />
+      <TranscriptPanel
+        sessions={sessionsForPanel}
+        isLive={livekitStatus === "connected"}
+        flags={MOCK_FLAGS}
+      />
+      <FactCheckSidebar flags={MOCK_FLAGS} />
     </main>
   );
 };
