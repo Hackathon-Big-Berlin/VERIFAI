@@ -106,6 +106,8 @@ export function useLiveKitRoom() {
 
     room.on(RoomEvent.Disconnected, () => {
       console.log("[livekit] disconnected");
+      localAudioTrackRef.current?.stop();
+      localAudioTrackRef.current = null;
       setStatus("idle");
       roomRef.current = null;
     });
