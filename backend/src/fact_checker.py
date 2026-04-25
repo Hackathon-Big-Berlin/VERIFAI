@@ -65,7 +65,7 @@ def _clean_json_response(text: str) -> str:
         text = text[:-3]
     return text.strip()
 
-async def process_single_claim(claim: str, tavily_client: AsyncTavilyClient, gemini_client: genai.Client) -> Dict[str, Any]:
+async def _process_single_claim(claim: str, tavily_client: AsyncTavilyClient, gemini_client: genai.Client) -> Dict[str, Any]:
     """Worker function to process a single claim asynchronously and parse JSON output."""
     claim = claim.strip()
     
@@ -175,7 +175,7 @@ async def run_fact_check_pipeline(text_block: str) -> List[Dict[str, Any]]:
             }]
         
         # Step 2: Set up tasks for concurrent execution
-        tasks = [process_single_claim(claim, tavily_client, gemini_client) for claim in claims]
+        tasks = [_process_single_claim(claim, tavily_client, gemini_client) for claim in claims]
         
         # Step 3: Execute all network calls concurrently
         raw_results = await asyncio.gather(*tasks, return_exceptions=False)
