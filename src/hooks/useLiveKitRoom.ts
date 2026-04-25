@@ -1,13 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  createLocalAudioTrack,
-  LocalAudioTrack,
-  Room,
-  RoomEvent,
-  Track,
-  type RemoteParticipant,
-  type TranscriptionSegment,
-} from "livekit-client";
+import { Room, RoomEvent, type RemoteParticipant } from "livekit-client";
+import type { TranscriptLine } from "@/lib/types";
 
 // Shape of the JSON we publish from the Python agent (see backend/src/agent.py).
 // Frontend renders transcripts live; flag verdicts will land here too once Lukas's stream is wired.
@@ -18,35 +11,26 @@ type DataChannelMessage =
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
 
+const SPEAKER_LABEL = "Speaker";
+
+function formatTimestamp(date: Date): string {
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL as string | undefined;
 const LIVEKIT_TOKEN = import.meta.env.VITE_LIVEKIT_TOKEN as string | undefined;
-
-function joinTranscriptText(finalText: string, interimText: string): string {
-  return [finalText, interimText].filter(Boolean).join(" ").trim();
-}
 
 // Connect to a LiveKit room, publish the mic, and log every Data Channel
 // message received from the Python agent. Returns a connect/disconnect API
 // plus the live status so the UI can render a button.
 export function useLiveKitRoom() {
   const roomRef = useRef<Room | null>(null);
-  const localAudioTrackRef = useRef<LocalAudioTrack | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [transcriptText, setTranscriptText] = useState("");
-  const finalizedTranscriptRef = useRef("");
-
-  const applyTranscript = useCallback((text: string, isFinal: boolean) => {
-    const trimmedText = text.trim();
-    if (!trimmedText) return;
-
-    if (isFinal) {
-      finalizedTranscriptRef.current = joinTranscriptText(finalizedTranscriptRef.current, trimmedText);
-      setTranscriptText(finalizedTranscriptRef.current);
-    } else {
-      setTranscriptText(joinTranscriptText(finalizedTranscriptRef.current, trimmedText));
-    }
-  }, []);
+  const [transcripts, setTranscripts] = useState<TranscriptLine[]>([]);
+  // Track whether the last appended line is still interim — if so, replace it
+  // on the next event instead of appending a fresh row. Reset on each `is_final: true`.
+  const pendingLineIdRef = useRef<string | null>(null);
 
   const connect = useCallback(async () => {
     if (!LIVEKIT_URL || !LIVEKIT_TOKEN) {
@@ -64,24 +48,6 @@ export function useLiveKitRoom() {
 
     setStatus("connecting");
     setError(null);
-    finalizedTranscriptRef.current = "";
-    setTranscriptText("");
-
-    let localAudioTrack: LocalAudioTrack;
-    try {
-      localAudioTrack = await createLocalAudioTrack({
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      });
-      localAudioTrackRef.current = localAudioTrack;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[livekit] microphone capture failed", err);
-      setError(msg);
-      setStatus("error");
-      return;
-    }
 
     const room = new Room({
       // Auto-tune mic settings for speech use case
@@ -113,42 +79,49 @@ export function useLiveKitRoom() {
           typeof (message as { text?: unknown }).text === "string"
         ) {
           const transcript = message as { type: "transcript"; text: string; is_final: boolean };
-          applyTranscript(transcript.text, transcript.is_final);
+          setTranscripts((previousLines) => {
+            const nextLines = [...previousLines];
+            const trailing = nextLines[nextLines.length - 1];
+            const isUpdatingPending =
+              pendingLineIdRef.current !== null &&
+              trailing !== undefined &&
+              trailing.id === pendingLineIdRef.current;
+
+            if (isUpdatingPending) {
+              // Same utterance, newer text — overwrite the trailing pending line.
+              nextLines[nextLines.length - 1] = {
+                ...trailing,
+                text: transcript.text,
+              };
+            } else {
+              // New utterance — start a new line and remember its id so future
+              // interim updates target it.
+              const newLineId =
+                typeof crypto !== "undefined" && "randomUUID" in crypto
+                  ? crypto.randomUUID()
+                  : `line-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+              pendingLineIdRef.current = newLineId;
+              nextLines.push({
+                id: newLineId,
+                timestamp: formatTimestamp(new Date()),
+                speaker: SPEAKER_LABEL,
+                text: transcript.text,
+              });
+            }
+
+            return nextLines;
+          });
+
+          // Final transcript closes the pending utterance — next event starts a fresh line.
+          if (transcript.is_final) {
+            pendingLineIdRef.current = null;
+          }
         }
       },
     );
-
-    room.on(
-      RoomEvent.TranscriptionReceived,
-      (segments: TranscriptionSegment[], participant, publication) => {
-        console.log("[livekit transcription]", {
-          from: participant?.identity,
-          trackSource: publication?.source,
-          segments,
-        });
-
-        for (const segment of segments) {
-          applyTranscript(segment.text, segment.final);
-        }
-      },
-    );
-
-    room.on(RoomEvent.LocalTrackPublished, (publication) => {
-      console.log("[livekit] local track published", {
-        source: publication.source,
-        kind: publication.kind,
-        muted: publication.isMuted,
-      });
-    });
-
-    room.on(RoomEvent.ParticipantConnected, (participant) => {
-      console.log("[livekit] participant connected", participant.identity);
-    });
 
     room.on(RoomEvent.Disconnected, () => {
       console.log("[livekit] disconnected");
-      localAudioTrackRef.current?.stop();
-      localAudioTrackRef.current = null;
       setStatus("idle");
       roomRef.current = null;
     });
@@ -156,10 +129,7 @@ export function useLiveKitRoom() {
     try {
       await room.connect(LIVEKIT_URL, LIVEKIT_TOKEN);
       // Publish the local mic so the agent has audio to transcribe.
-      await room.localParticipant.publishTrack(localAudioTrack, {
-        source: Track.Source.Microphone,
-        name: "microphone",
-      });
+      await room.localParticipant.setMicrophoneEnabled(true);
       roomRef.current = room;
       setStatus("connected");
       console.log("[livekit] connected as", room.localParticipant.identity);
@@ -168,14 +138,10 @@ export function useLiveKitRoom() {
       console.error("[livekit] connect failed", err);
       setError(msg);
       setStatus("error");
-      localAudioTrack.stop();
-      localAudioTrackRef.current = null;
     }
   }, []);
 
   const disconnect = useCallback(async () => {
-    localAudioTrackRef.current?.stop();
-    localAudioTrackRef.current = null;
     await roomRef.current?.disconnect();
     roomRef.current = null;
     setStatus("idle");
@@ -184,12 +150,10 @@ export function useLiveKitRoom() {
   // Cleanup on unmount so HMR / page nav doesn't leak rooms.
   useEffect(() => {
     return () => {
-      localAudioTrackRef.current?.stop();
-      localAudioTrackRef.current = null;
       roomRef.current?.disconnect();
       roomRef.current = null;
     };
   }, []);
 
-  return { status, error, transcriptText, connect, disconnect };
+  return { status, error, transcripts, connect, disconnect };
 }

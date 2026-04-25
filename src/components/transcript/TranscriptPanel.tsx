@@ -1,10 +1,12 @@
 import { ScrollArea } from "@/components/ui/scroll-area";
+import type { TranscriptLine as TranscriptLineType } from "@/lib/types";
+import { TranscriptLine } from "./TranscriptLine";
 
 type TranscriptPanelProps = {
-  transcriptText: string;
+  lines: TranscriptLineType[];
 };
 
-export function TranscriptPanel({ transcriptText }: TranscriptPanelProps) {
+export function TranscriptPanel({ lines }: TranscriptPanelProps) {
   return (
     <section className="flex min-h-0 flex-1 flex-col border-b border-border bg-background lg:border-b-0 lg:border-r">
       <header className="flex items-center justify-between border-b border-border px-4 py-4 md:px-6">
@@ -19,15 +21,13 @@ export function TranscriptPanel({ transcriptText }: TranscriptPanelProps) {
       </header>
 
       <ScrollArea className="min-h-[28rem] flex-1 lg:min-h-0">
-        <div aria-live="polite" aria-label="Incoming transcript">
-          {transcriptText.length === 0 ? (
+        <div aria-live="polite" aria-label="Incoming transcript lines">
+          {lines.length === 0 ? (
             <div className="px-4 py-10 text-muted-foreground md:px-6">Waiting for transcript audio...</div>
           ) : (
-            <article className="px-4 py-6 md:px-6">
-              <p className="max-w-4xl whitespace-pre-wrap text-lg leading-8 text-foreground md:text-xl md:leading-9">
-                {transcriptText}
-              </p>
-            </article>
+            lines.map((line, index) => (
+              <TranscriptLine key={line.id} line={line} isLatest={index === lines.length - 1} />
+            ))
           )}
         </div>
       </ScrollArea>

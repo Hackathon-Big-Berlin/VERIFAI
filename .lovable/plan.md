@@ -1,29 +1,75 @@
-## Plan: Combine transcript lines into one block per connection
+## Plan: Build TruWord V1 Frontend
 
-Update the transcript experience so each time **Connect** is clicked, the spoken transcript appears as one continuous block instead of separate rows.
+Create a minimal V1 interface for **TruWord**, a real-time fact-checking tool, using the uploaded requirements as the source of truth.
 
-### What will change
+### What will be built
 
-- Treat the transcript as a single-speaker session.
-- On each new LiveKit connection, clear any previous transcript content and start a fresh transcript block.
-- As transcript messages arrive, append finalized speech into the current block.
-- Keep interim/non-final transcript updates visible by replacing the in-progress ending text instead of adding a new line.
-- Remove the separate timestamp/speaker row layout from the transcript display.
+- Replace the placeholder homepage with a clean two-panel app layout:
+  - **Left panel:** live-style scrolling audio transcript
+  - **Right sidebar:** flagged fact-check claims as they arrive
+- Use a minimalist, high-contrast visual style focused on readability.
+- Simulate live incoming data with mock transcript and fact-check events.
+- Keep the app intentionally scoped to V1: no routing, no backend integration, no complex state management, no extra features.
 
 ### User experience
 
-- Before connecting, the panel still shows the waiting message.
-- After connecting and speaking, the left panel shows one readable paragraph/block of transcript text.
-- Disconnecting does not split the transcript into rows.
-- Clicking **Connect** again starts a new clean transcript block.
+- The transcript panel will show timestamped transcript lines that appear over time.
+- The sidebar will show fact-check cards as flags arrive, including:
+  - original sentence
+  - verdict
+  - reason
+  - source link
+- The layout will remain usable on smaller screens by stacking or adapting the two panels.
+- Clear empty/loading states will make the simulated live behavior understandable.
 
-### Technical details
+### Code organization
 
-- Update `useLiveKitRoom` so transcript state is session-oriented rather than row-oriented:
-  - reset transcript state inside `connect()`
-  - maintain finalized text plus the current interim text
-  - expose a single combined transcript string or one block-like data object
-- Update `TranscriptPanel` to render the joined transcript block.
-- `TranscriptLine` can be removed from use or simplified if no longer needed.
-- Keep existing LiveKit connection controls and fact-check sidebar behavior unchanged.
-- Run the existing TypeScript/tests after implementation.
+The implementation will avoid a single-file app and use modular folders:
+
+```text
+src/
+  components/
+    transcript/
+      TranscriptPanel.tsx
+      TranscriptLine.tsx
+    sidepanel/
+      FactCheckSidebar.tsx
+      FactCheckCard.tsx
+  lib/
+    mockdata/
+      transcript.ts
+      fact-checks.ts
+    types.ts
+  pages/
+    Index.tsx
+```
+
+### Mock data and future LiveKit integration
+
+- Mock fact-check payloads will use the required JSON contract:
+
+```json
+{
+  "type": "flag",
+  "sentence": "The EU produces 30% of global emissions.",
+  "verdict": "disputed",
+  "reason": "Current data puts EU share at around 7–8%.",
+  "source": "https://..."
+}
+```
+
+- A small mock stream/generator will simulate receiving transcript and flag events over time.
+- Clear TODO comments will be placed where real LiveKit data channel subscriptions or backend API calls should later replace the mock logic, for example:
+
+```ts
+// TODO: LiveKit function call would happen here
+// TODO: Replace with real LiveKit data channel payload
+```
+
+### Technical notes
+
+- Use React hooks only for state and timed mock updates.
+- Use existing Vite + React + Tailwind setup.
+- Do not add routes or new state libraries.
+- Leave `backend/` untouched and empty if it exists or is later added.
+- Keep components small, readable, and separated from mock data.
