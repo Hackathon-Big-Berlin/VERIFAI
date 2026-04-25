@@ -1,58 +1,23 @@
-import { useEffect, useState } from "react";
 import { FactCheckSidebar } from "@/components/sidepanel/FactCheckSidebar";
 import { TranscriptPanel } from "@/components/transcript/TranscriptPanel";
-import { getMockFactCheckFlags } from "@/lib/mockdata/fact-checks";
+// Deletion: Removed import { getMockFactCheckFlags } from "@/lib/mockdata/fact-checks";
 import type { FactCheckFlag } from "@/lib/types";
 import { useLiveKitRoom } from "@/hooks/useLiveKitRoom";
 
-// Mock fact-check flags still ship until Lukas's Gemini stream is wired in.
-const factCheckFlags = getMockFactCheckFlags();
 
 const Index = () => {
-  const [visibleFlags, setVisibleFlags] = useState<FactCheckFlag[]>([]);
+
+  
   // LiveKit connection — browser mic → agent (Deepgram STT) → data channel → these state vars.
   const {
     status: livekitStatus,
     error: livekitError,
     sessions,
+    flags, // Extracting our live backend flags directly from the hook
     connect,
     disconnect,
   } = useLiveKitRoom();
 
-  useEffect(() => {
-    console.log("[ui] livekit state", {
-      status: livekitStatus,
-      error: livekitError,
-      sessions: sessions.length,
-    });
-  }, [livekitStatus, livekitError, sessions.length]);
-
-  useEffect(() => {
-    const latestSession = sessions[sessions.length - 1];
-    if (!latestSession) return;
-    console.log("[ui] latest transcript session", {
-      id: latestSession.id,
-      startedAt: latestSession.startedAt,
-      committedLength: latestSession.text.length,
-      pendingLength: latestSession.pendingText.length,
-    });
-  }, [sessions]);
-
-  // Temporary: drip-feed mock fact-check flags so the sidebar isn't empty during dev.
-  // Remove this once Lukas's `flag` payloads start arriving on the data channel.
-  useEffect(() => {
-    let currentIndex = 0;
-    const intervalId = window.setInterval(() => {
-      const nextFlag = factCheckFlags[currentIndex];
-      if (!nextFlag) {
-        window.clearInterval(intervalId);
-        return;
-      }
-      setVisibleFlags((currentFlags) => [...currentFlags, nextFlag]);
-      currentIndex += 1;
-    }, 4000);
-    return () => window.clearInterval(intervalId);
-  }, []);
 
   return (
     <main className="flex min-h-screen flex-col bg-background text-foreground lg:flex-row">
@@ -79,7 +44,9 @@ const Index = () => {
         {livekitError ? <span className="text-destructive">{livekitError}</span> : null}
       </div>
       <TranscriptPanel sessions={sessions} isLive={livekitStatus === "connected"} />
-      <FactCheckSidebar flags={visibleFlags} />
+      
+      {/* Added: Pass the LiveKit flags directly into the sidebar */}
+      <FactCheckSidebar flags={flags} />
     </main>
   );
 };

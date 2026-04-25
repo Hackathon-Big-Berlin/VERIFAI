@@ -16,12 +16,13 @@ export type TranscriptSession = {
   pendingText: string;
 };
 
-export type FactCheckVerdict = "disputed" | "false" | "needs-context";
+export type FactCheckVerdict = "TRUE" | "FALSE" | "PARTIALLY TRUE" | "INCONCLUSIVE";
 
-export type FactCheckFlag = {
+// Find this interface in your types file and update the keys
+export interface FactCheckFlag {
   type: "flag";
-  sentence: string;
-  verdict: FactCheckVerdict;
-  reason: string;
-  source: string;
-};
+  claim: string;       // Changed from 'sentence'
+  verdict: string;
+  reasoning: string;   // Changed from 'reason'
+  sources: string[];   // Changed from 'source' (string) to array
+}
