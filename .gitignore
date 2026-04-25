@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Bun since we're prob using npm
+bun.lock
+bun.lockb
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -22,3 +26,20 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Lovable's memory:
+mem:/preferences/*
+
+
+# Global Security Failsafes
+# Prevents any .env file in any subfolder from being committed
+.env
+.env.*
+!.env.example
+
+# Global Python Failsafes
+# Prevents virtual environments and cache files from bloating the monorepo
+.venv/
+__pycache__/
+*.pyc
+
