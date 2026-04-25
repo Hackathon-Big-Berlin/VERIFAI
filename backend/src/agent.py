@@ -86,11 +86,15 @@ async def my_agent(ctx: JobContext):
                     version,
                     json.dumps(results, indent=2),
                 )
-            except asyncio.CancelledError:
-                # Re-raise so the task actually exits on session end, but
-                # log it first so it's not invisible.
-                logger.info("[worker] cancelled mid-flight version=%s", version)
-                raise
+            except asyncio.CancelledError as e:
+                # Diagnostic: a single bad Gemini call shouldn't kill the
+                # worker forever. Log the underlying cause and keep looping
+                # so subsequent queue items still get processed.
+                logger.warning(
+                    "[worker] cancellation received version=%s cause=%r — keeping worker alive",
+                    version,
+                    e.__cause__,
+                )
             except Exception:
                 logger.exception("[worker] failed version=%s", version)
             finally:
