@@ -74,12 +74,23 @@ async def my_agent(ctx: JobContext):
                     version,
                     context_snapshot[:120],
                 )
+                logger.info("[worker] calling pipeline version=%s", version)
                 results = await run_fact_check_pipeline(context_snapshot)
+                logger.info(
+                    "[worker] pipeline returned version=%s n_results=%s",
+                    version,
+                    len(results),
+                )
                 logger.info(
                     "[worker] pipeline result version=%s:\n%s",
                     version,
                     json.dumps(results, indent=2),
                 )
+            except asyncio.CancelledError:
+                # Re-raise so the task actually exits on session end, but
+                # log it first so it's not invisible.
+                logger.info("[worker] cancelled mid-flight version=%s", version)
+                raise
             except Exception:
                 logger.exception("[worker] failed version=%s", version)
             finally:
