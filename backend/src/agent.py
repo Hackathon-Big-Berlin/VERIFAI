@@ -61,10 +61,14 @@ async def my_agent(ctx: JobContext):
     context_window: str = ""
     context_version = 0
     fact_check_queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
+    # Dedup key = "claim|verdict". Same shape as the frontend's dedup so we
+    # don't even bother sending repeats — the rolling context window means the
+    # pipeline re-extracts the same claim on every final transcript.
+    published_claims: set[str] = set()
 
-    # STEP 2 — run the real pipeline and log the structured result.
-    # Still no publishing (that's step 3). Catches all exceptions so a
-    # failing pipeline run never kills the loop.
+    # STEP 3 — run the pipeline and publish each successful, novel verdict
+    # to the data channel as topic="flag". Frontend's useLiveKitRoom hook
+    # picks these up and routes them into the side panel + transcript.
     async def fact_check_worker():
         while True:
             version, context_snapshot = await fact_check_queue.get()
@@ -86,6 +90,41 @@ async def my_agent(ctx: JobContext):
                     version,
                     json.dumps(results, indent=2),
                 )
+
+                for result in results:
+                    if result.get("status") != "success":
+                        continue
+                    claim = result.get("claim", "")
+                    verdict = result.get("verdict", "")
+                    key = f"{claim}|{verdict}"
+                    if key in published_claims:
+                        continue
+                    published_claims.add(key)
+
+                    flag_payload = json.dumps(
+                        {
+                            "type": "flag",
+                            "claim": claim,
+                            "verdict": verdict,
+                            "reasoning": result.get("reasoning", ""),
+                            "sources": result.get("sources", []),
+                        }
+                    ).encode("utf-8")
+
+                    try:
+                        await ctx.room.local_participant.publish_data(
+                            flag_payload, reliable=True, topic="flag"
+                        )
+                        logger.info(
+                            "[worker] published flag verdict=%s claim=%r",
+                            verdict,
+                            claim[:80],
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[worker] failed to publish flag claim=%r",
+                            claim[:80],
+                        )
             except asyncio.CancelledError as e:
                 # Diagnostic: a single bad Gemini call shouldn't kill the
                 # worker forever. Log the underlying cause and keep looping
