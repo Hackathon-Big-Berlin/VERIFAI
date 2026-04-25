@@ -3,10 +3,10 @@ import type { TranscriptLine as TranscriptLineType } from "@/lib/types";
 import { TranscriptLine } from "./TranscriptLine";
 
 type TranscriptPanelProps = {
-  lines: TranscriptLineType[];
+  lines?: TranscriptLineType[];
 };
 
-export function TranscriptPanel({ lines }: TranscriptPanelProps) {
+export function TranscriptPanel({ lines = [] }: TranscriptPanelProps) {
   return (
     <section className="flex min-h-0 flex-1 flex-col border-b border-border bg-background lg:border-b-0 lg:border-r">
       <header className="flex items-center justify-between border-b border-border px-4 py-4 md:px-6">
