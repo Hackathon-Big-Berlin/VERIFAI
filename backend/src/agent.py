@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from collections import deque
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -15,6 +16,7 @@ from livekit.agents import (
 from livekit.plugins import ai_coustics, silero
 
 logger = logging.getLogger("agent")
+MAX_CONTEXT_WORDS = 500
 
 load_dotenv(".env.local")
 
@@ -39,8 +41,20 @@ async def my_agent(ctx: JobContext):
     # can layer in fact-check verdicts on the same channel under a different topic).
     # Keep strong refs to in-flight publish tasks so they aren't GC'd before completing.
     pending_publishes: set[asyncio.Task] = set()
+    # Sliding context window for downstream Gemini prompting.
+    # This is intentionally plain text for now and only includes finalized STT chunks.
+    context_words: deque[str] = deque(maxlen=MAX_CONTEXT_WORDS)
+    context_window: str = ""
 
     def forward_transcript_to_data_channel(event):
+        nonlocal context_window
+
+        if event.is_final and event.transcript and event.transcript.strip():
+            # Add new words and automatically evict oldest words once maxlen is reached.
+            context_words.extend(event.transcript.strip().split())
+            context_window = " ".join(context_words)
+            logger.debug("updated context window words=%s", len(context_words))
+
         # session.on(...) callbacks are sync, but publish_data is async.
         # Schedule the publish on the running event loop so we don't block.
         payload = json.dumps(
