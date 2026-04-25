@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Room, RoomEvent, type RemoteParticipant } from "livekit-client";
+import { createLocalAudioTrack, LocalAudioTrack, Room, RoomEvent, type RemoteParticipant } from "livekit-client";
 
 // Shape of the JSON we publish from the Python agent (see backend/src/agent.py).
 // Frontend renders transcripts live; flag verdicts will land here too once Lukas's stream is wired.
@@ -22,6 +22,7 @@ function joinTranscriptText(finalText: string, interimText: string): string {
 // plus the live status so the UI can render a button.
 export function useLiveKitRoom() {
   const roomRef = useRef<Room | null>(null);
+  const localAudioTrackRef = useRef<LocalAudioTrack | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [transcriptText, setTranscriptText] = useState("");
@@ -45,6 +46,22 @@ export function useLiveKitRoom() {
     setError(null);
     finalizedTranscriptRef.current = "";
     setTranscriptText("");
+
+    let localAudioTrack: LocalAudioTrack;
+    try {
+      localAudioTrack = await createLocalAudioTrack({
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      });
+      localAudioTrackRef.current = localAudioTrack;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[livekit] microphone capture failed", err);
+      setError(msg);
+      setStatus("error");
+      return;
+    }
 
     const room = new Room({
       // Auto-tune mic settings for speech use case
@@ -89,6 +106,8 @@ export function useLiveKitRoom() {
 
     room.on(RoomEvent.Disconnected, () => {
       console.log("[livekit] disconnected");
+      localAudioTrackRef.current?.stop();
+      localAudioTrackRef.current = null;
       setStatus("idle");
       roomRef.current = null;
     });
@@ -96,7 +115,7 @@ export function useLiveKitRoom() {
     try {
       await room.connect(LIVEKIT_URL, LIVEKIT_TOKEN);
       // Publish the local mic so the agent has audio to transcribe.
-      await room.localParticipant.setMicrophoneEnabled(true);
+      await room.localParticipant.publishTrack(localAudioTrack);
       roomRef.current = room;
       setStatus("connected");
       console.log("[livekit] connected as", room.localParticipant.identity);
@@ -105,10 +124,14 @@ export function useLiveKitRoom() {
       console.error("[livekit] connect failed", err);
       setError(msg);
       setStatus("error");
+      localAudioTrack.stop();
+      localAudioTrackRef.current = null;
     }
   }, []);
 
   const disconnect = useCallback(async () => {
+    localAudioTrackRef.current?.stop();
+    localAudioTrackRef.current = null;
     await roomRef.current?.disconnect();
     roomRef.current = null;
     setStatus("idle");
@@ -117,6 +140,8 @@ export function useLiveKitRoom() {
   // Cleanup on unmount so HMR / page nav doesn't leak rooms.
   useEffect(() => {
     return () => {
+      localAudioTrackRef.current?.stop();
+      localAudioTrackRef.current = null;
       roomRef.current?.disconnect();
       roomRef.current = null;
     };
