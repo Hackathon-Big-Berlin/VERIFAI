@@ -1,31 +1,20 @@
-import { useMemo } from "react";
+import { useEffect, useState } from "react";
 import { FactCheckSidebar } from "@/components/sidepanel/FactCheckSidebar";
 import { TranscriptPanel } from "@/components/transcript/TranscriptPanel";
-import { DEMO_SESSION_ID, getMockFactCheckFlags } from "@/lib/mockdata/fact-checks";
-import { getMockTranscriptLines } from "@/lib/mockdata/transcript";
-import type { TranscriptSession } from "@/lib/types";
+import { getMockFactCheckFlags } from "@/lib/mockdata/fact-checks";
+import type { FactCheckFlag } from "@/lib/types";
 import { useLiveKitRoom } from "@/hooks/useLiveKitRoom";
 
-// Demo session pre-populated with a mock transcript so the highlighting
-// design is visible the moment the page loads — even without the agent
-// running. Real sessions append below it once the user clicks Connect.
-const DEMO_SESSION: TranscriptSession = {
-  id: DEMO_SESSION_ID,
-  startedAt: "demo",
-  text: getMockTranscriptLines()
-    .map((line) => line.text)
-    .join(" "),
-  pendingText: "",
-};
-
-const MOCK_FLAGS = getMockFactCheckFlags();
+// Mock fact-check flags still ship until Lukas's Gemini stream is wired in.
+const factCheckFlags = getMockFactCheckFlags();
 
 const Index = () => {
+  const [visibleFlags, setVisibleFlags] = useState<FactCheckFlag[]>([]);
   // LiveKit connection — browser mic → agent (Deepgram STT) → data channel → these state vars.
   const {
     status: livekitStatus,
     error: livekitError,
-    sessions: liveSessions,
+    sessions,
     connect,
     disconnect,
   } = useLiveKitRoom();
@@ -89,12 +78,8 @@ const Index = () => {
         )}
         {livekitError ? <span className="text-destructive">{livekitError}</span> : null}
       </div>
-      <TranscriptPanel
-        sessions={sessionsForPanel}
-        isLive={livekitStatus === "connected"}
-        flags={MOCK_FLAGS}
-      />
-      <FactCheckSidebar flags={MOCK_FLAGS} />
+      <TranscriptPanel sessions={sessions} isLive={livekitStatus === "connected"} />
+      <FactCheckSidebar flags={visibleFlags} />
     </main>
   );
 };
