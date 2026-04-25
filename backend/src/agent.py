@@ -136,6 +136,11 @@ async def my_agent(ctx: JobContext):
                 agent=Agent(instructions="Transcribe user speech. Do not respond."),
                 room=ctx.room,
                 room_options=room_io.RoomOptions(
+                    # Tear down the room when the user disconnects so the next
+                    # Connect creates a fresh room and re-triggers agent dispatch
+                    # (rooms otherwise linger ~5min on LiveKit Cloud and reconnecting
+                    # joins the existing room without dispatching the agent).
+                    delete_room_on_close=True,
                     audio_input=room_io.AudioInputOptions(
                         noise_cancellation=ai_coustics.audio_enhancement(
                             model=ai_coustics.EnhancerModel.QUAIL_VF_L

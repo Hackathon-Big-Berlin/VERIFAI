@@ -219,12 +219,13 @@ export function useLiveKitRoom() {
     }
   }, [ensureRoomConnected]);
 
-  // Disconnect just mutes the mic — the LiveKit room and the agent stay live
-  // so the next Connect is instant. The current session block freezes in place.
+  // Fully leave the room so the agent's close_on_disconnect fires and the
+  // backend's delete_room_on_close=True tears the room down. That lets the
+  // next Connect create a fresh room and re-dispatch the agent automatically.
   const disconnect = useCallback(async () => {
     console.log("[livekit] disconnect requested");
-    await roomRef.current?.localParticipant.setMicrophoneEnabled(false);
-    console.log("[livekit] microphone disabled");
+    await roomRef.current?.disconnect();
+    roomRef.current = null;
     setStatus("idle");
   }, []);
 
