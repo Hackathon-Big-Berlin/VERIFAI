@@ -20,6 +20,16 @@ from fact_checker import run_fact_check_pipeline
 logger = logging.getLogger("agent")
 MAX_CONTEXT_WORDS = 500
 
+
+def configure_logging() -> None:
+    # Ensure debug/info logs are visible during local dev runs.
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        force=True,
+    )
+    logger.debug("logging configured", extra={"level": "DEBUG"})
+
 load_dotenv(".env.local")
 
 server = AgentServer()
@@ -54,6 +64,7 @@ async def my_agent(ctx: JobContext):
         while True:
             version, context_snapshot = await fact_check_queue.get()
             try:
+                logger.info("Running fact check worker")
                 results = await run_fact_check_pipeline(context_snapshot)
                 logger.info(
                     "fact-check results (context_version=%s): %s",
@@ -128,4 +139,5 @@ async def my_agent(ctx: JobContext):
 
 
 if __name__ == "__main__":
+    configure_logging()
     cli.run_app(server)
