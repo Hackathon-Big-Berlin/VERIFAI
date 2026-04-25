@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from collections import deque
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -14,9 +15,22 @@ from livekit.agents import (
 )
 from livekit.plugins import ai_coustics, silero
 
+from fact_checker import run_fact_check_pipeline
+
 import mock_stream
 
 logger = logging.getLogger("agent")
+MAX_CONTEXT_WORDS = 500
+
+
+def configure_logging() -> None:
+    # Ensure debug/info logs are visible during local dev runs.
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        force=True,
+    )
+    logger.debug("logging configured", extra={"level": "DEBUG"})
 
 load_dotenv(".env.local")
 
@@ -41,8 +55,43 @@ async def my_agent(ctx: JobContext):
     # can layer in fact-check verdicts on the same channel under a different topic).
     # Keep strong refs to in-flight publish tasks so they aren't GC'd before completing.
     pending_publishes: set[asyncio.Task] = set()
+    # Sliding context window for downstream Gemini prompting.
+    # This is intentionally plain text for now and only includes finalized STT chunks.
+    context_words: deque[str] = deque(maxlen=MAX_CONTEXT_WORDS)
+    context_window: str = ""
+    context_version = 0
+    fact_check_queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
+
+    async def fact_check_worker():
+        while True:
+            version, context_snapshot = await fact_check_queue.get()
+            try:
+                logger.info("Running fact check worker")
+                results = await run_fact_check_pipeline(context_snapshot)
+                logger.info(
+                    "fact-check results (context_version=%s): %s",
+                    version,
+                    json.dumps(results),
+                )
+            except Exception:
+                logger.exception("fact-check pipeline failed (context_version=%s)", version)
+            finally:
+                fact_check_queue.task_done()
+
+    fact_check_worker_task = asyncio.create_task(fact_check_worker())
 
     def forward_transcript_to_data_channel(event):
+        nonlocal context_window, context_version
+
+        if event.is_final and event.transcript and event.transcript.strip():
+            # Add new words and automatically evict oldest words once maxlen is reached.
+            context_words.extend(event.transcript.strip().split())
+            context_window = " ".join(context_words)
+            context_version += 1
+            # N=1: run fact-check for every new final transcript chunk.
+            fact_check_queue.put_nowait((context_version, context_window))
+            logger.debug("updated context window words=%s", len(context_words))
+
         # session.on(...) callbacks are sync, but publish_data is async.
         # Schedule the publish on the running event loop so we don't block.
         payload = json.dumps(
@@ -69,31 +118,36 @@ async def my_agent(ctx: JobContext):
 
     session.on("user_input_transcribed", forward_transcript_to_data_channel)
 
-    # Join the room before starting the voice pipeline so the agent can receive
-    # browser microphone audio and publish transcript events back to the frontend.
-    await ctx.connect()
+    try:
+        # Join the room before starting the voice pipeline so the agent can receive
+        # browser microphone audio and publish transcript events back to the frontend.
+        await ctx.connect()
 
-    #Mock Fact Check StreamL
-    # We now dispatch that external function as a background task.
-    mock_task = asyncio.create_task(mock_stream.start_mock_fact_check_stream(ctx, logger))
-    
-    # Store a strong reference to prevent Python's garbage collector from destroying it
-    pending_publishes.add(mock_task)
-    mock_task.add_done_callback(pending_publishes.discard)
-    # -------------------------------------
-    # Start the session, which initializes the voice pipeline and warms up the models
-    await session.start(
-        agent=Agent(instructions="Transcribe user speech. Do not respond."),
-        room=ctx.room,
-        room_options=room_io.RoomOptions(
-            audio_input=room_io.AudioInputOptions(
-                noise_cancellation=ai_coustics.audio_enhancement(
-                    model=ai_coustics.EnhancerModel.QUAIL_VF_L
+        #Mock Fact Check StreamL
+        # We now dispatch that external function as a background task.
+        mock_task = asyncio.create_task(mock_stream.start_mock_fact_check_stream(ctx, logger))
+        
+        # Store a strong reference to prevent Python's garbage collector from destroying it
+        pending_publishes.add(mock_task)
+        mock_task.add_done_callback(pending_publishes.discard)
+        # -------------------------------------
+        # Start the session, which initializes the voice pipeline and warms up the models
+        await session.start(
+                agent=Agent(instructions="Transcribe user speech. Do not respond."),
+                room=ctx.room,
+                room_options=room_io.RoomOptions(
+                    audio_input=room_io.AudioInputOptions(
+                        noise_cancellation=ai_coustics.audio_enhancement(
+                            model=ai_coustics.EnhancerModel.QUAIL_VF_L
+                        ),
+                    ),
                 ),
-            ),
-        ),
-    )
+            )
+    finally:
+        fact_check_worker_task.cancel()
+        await asyncio.gather(fact_check_worker_task, return_exceptions=True)
 
 
 if __name__ == "__main__":
+    configure_logging()
     cli.run_app(server)

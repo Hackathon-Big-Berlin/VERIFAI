@@ -38,7 +38,10 @@ export function useLiveKitRoom() {
   // for the page lifetime. This avoids the dispatch cold-start delay every
   // time the user toggles Connect/Disconnect.
   const ensureRoomConnected = useCallback(async (): Promise<Room | null> => {
-    if (roomRef.current) return roomRef.current;
+    if (roomRef.current) {
+      console.log("[livekit] reusing existing room instance");
+      return roomRef.current;
+    }
 
     if (!LIVEKIT_URL || !LIVEKIT_TOKEN) {
       const msg = "Missing VITE_LIVEKIT_URL or VITE_LIVEKIT_TOKEN in .env";
@@ -47,6 +50,11 @@ export function useLiveKitRoom() {
       setStatus("error");
       return null;
     }
+
+    console.log("[livekit] creating room", {
+      url: LIVEKIT_URL,
+      hasToken: Boolean(LIVEKIT_TOKEN),
+    });
 
     const room = new Room({
       // Auto-tune mic settings for speech use case
@@ -99,6 +107,13 @@ export function useLiveKitRoom() {
             }
 
             nextSessions[nextSessions.length - 1] = currentSession;
+            console.log("[livekit data] transcript applied", {
+              isFinal: transcript.is_final,
+              textLength: transcript.text.length,
+              sessionId: currentSession.id,
+              committedLength: currentSession.text.length,
+              pendingLength: currentSession.pendingText.length,
+            });
             return nextSessions;
           });        
         }
@@ -118,9 +133,19 @@ export function useLiveKitRoom() {
             if (prev.some((f) => `${f.claim}|${f.verdict}` === key)) return prev;
             return [...prev, flagMessage];
           });
+        } else {
+          console.log("[livekit data] message ignored (unsupported shape)", {
+            topic,
+            from: participant?.identity,
+            message,
+          });
         }
       },
     );
+
+    room.on(RoomEvent.ConnectionStateChanged, (connectionState) => {
+      console.log("[livekit] connection state", connectionState);
+    });
 
     room.on(RoomEvent.ParticipantConnected, (participant: RemoteParticipant) => {
       console.log("[livekit] participant connected", {
@@ -147,6 +172,7 @@ export function useLiveKitRoom() {
     });
 
     await room.connect(LIVEKIT_URL, LIVEKIT_TOKEN);
+    console.log("[livekit] room.connect completed");
     const agentParticipant = Array.from(room.remoteParticipants.values()).find(
       (participant) => participant.kind === ParticipantKind.AGENT,
     );
@@ -159,14 +185,19 @@ export function useLiveKitRoom() {
   }, []);
 
   const connect = useCallback(async () => {
+    console.log("[livekit] connect requested");
     setStatus("connecting");
     setError(null);
 
     try {
       const room = await ensureRoomConnected();
-      if (!room) return;
+      if (!room) {
+        console.warn("[livekit] connect aborted: no room available");
+        return;
+      }
       // Mic on → audio flows to the agent → transcripts arrive on the data channel.
       await room.localParticipant.setMicrophoneEnabled(true);
+      console.log("[livekit] microphone enabled");
       // Open a fresh transcript block for this Connect press. Older blocks
       // remain above it so users can review past sessions.
       setSessions((previousSessions) => [
@@ -179,6 +210,7 @@ export function useLiveKitRoom() {
         },
       ]);
       setStatus("connected");
+      console.log("[livekit] connect flow completed");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[livekit] connect failed", err);
@@ -190,7 +222,9 @@ export function useLiveKitRoom() {
   // Disconnect just mutes the mic — the LiveKit room and the agent stay live
   // so the next Connect is instant. The current session block freezes in place.
   const disconnect = useCallback(async () => {
+    console.log("[livekit] disconnect requested");
     await roomRef.current?.localParticipant.setMicrophoneEnabled(false);
+    console.log("[livekit] microphone disabled");
     setStatus("idle");
   }, []);
 

@@ -9,10 +9,12 @@ description = "Simple voice AI assistant built with LiveKit Agents for Python"
 requires-python = ">=3.10, <3.15"
 
 dependencies = [
+    "google-genai>=1.73.1",
     "livekit-agents[silero,turn-detector]~=1.5",
     "livekit-plugins-ai-coustics~=0.2",
     "livekit-plugins-deepgram>=1.5.6",
     "python-dotenv",
+    "tavily-python>=0.7.23",
 ]
 
 [dependency-groups]

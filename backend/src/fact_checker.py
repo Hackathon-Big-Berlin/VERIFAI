@@ -2,16 +2,36 @@ import asyncio
 import time
 import os
 import json
+import logging
 import dotenv
 from typing import List, Dict, Any
 from tavily import AsyncTavilyClient
 from google import genai
 
 dotenv.load_dotenv()
+logger = logging.getLogger("agent")
 
 # Constants
 GEMINI_MODEL_NAME = 'gemini-3.1-flash-lite-preview'
 SEARCH_DEPTH = 'advanced'
+
+
+def _get_gemini_api_key() -> str:
+    """Returns Gemini API key from explicit env vars, or raises a clear error."""
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "Missing Gemini API key. Set GOOGLE_API_KEY (preferred) or GEMINI_API_KEY."
+        )
+    return api_key
+
+
+def _get_tavily_api_key() -> str:
+    """Returns Tavily API key from the explicit TAVILY_API_KEY env var."""
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        raise ValueError("Missing Tavily API key. Set TAVILY_API_KEY.")
+    return api_key
 
 GEMINI_PROMPT = '''
 You are an expert, highly objective fact-checking AI. Your sole purpose is to evaluate the accuracy of a specific CLAIM based strictly on the provided CONTEXT. The CONTEXT consists of search results, including snippets and their source URLs.
@@ -93,6 +113,14 @@ async def _process_single_claim(claim: str, tavily_client: AsyncTavilyClient, ge
             model=GEMINI_MODEL_NAME, 
             contents=final_prompt
         )
+
+        # Debug visibility: emit Gemini raw fact-check output on every run.
+        raw_fact_check_output = response.text if response and response.text else ""
+        logger.debug(
+            "[FACT_CHECK][GEMINI_RAW_OUTPUT] claim=%s output=%s",
+            claim,
+            raw_fact_check_output,
+        )
         
         # 3. Parse and Validate JSON
         cleaned_text = _clean_json_response(response.text)
@@ -111,8 +139,10 @@ async def _process_single_claim(claim: str, tavily_client: AsyncTavilyClient, ge
         })
 
     except json.JSONDecodeError:
+        logger.exception("Failed to parse Gemini fact-check response as JSON")
         result_data["reasoning"] = "Failed to parse the fact-checking model's response into valid JSON."
     except Exception as e:
+        logger.exception("Error during fact-checking pipeline for claim")
         result_data["reasoning"] = f"Error during fact-checking pipeline: {str(e)}"
 
     return result_data
@@ -132,9 +162,10 @@ async def run_fact_check_pipeline(text_block: str) -> List[Dict[str, Any]]:
         }]
 
     try:
-        tavily_client = AsyncTavilyClient()
-        gemini_client = genai.Client()
+        tavily_client = AsyncTavilyClient(api_key=_get_tavily_api_key())
+        gemini_client = genai.Client(api_key=_get_gemini_api_key())
     except Exception as e:
+        logger.exception("Failed to initialize AI clients")
         return [{
             "claim": "System", 
             "status": "error", 
@@ -151,6 +182,7 @@ async def run_fact_check_pipeline(text_block: str) -> List[Dict[str, Any]]:
         )
         
         if not parsed_data or not parsed_data.text:
+            logger.error("Claim extraction returned empty response")
             return [{
                 "claim": "Extraction", 
                 "status": "error", 
@@ -166,7 +198,8 @@ async def run_fact_check_pipeline(text_block: str) -> List[Dict[str, Any]]:
             if not isinstance(claims, list):
                 raise ValueError("Extracted JSON is not a list.")
         except (json.JSONDecodeError, ValueError) as e:
-             return [{
+            logger.exception("Failed to parse extracted claims JSON")
+            return [{
                 "claim": "Extraction", 
                 "status": "error", 
                 "verdict": "ERROR", 
@@ -184,6 +217,7 @@ async def run_fact_check_pipeline(text_block: str) -> List[Dict[str, Any]]:
         return [res for res in raw_results if res.get("status") != "skipped"]
 
     except Exception as e:
+        logger.exception("Critical orchestrator error in fact-check pipeline")
         return [{
             "claim": "Pipeline", 
             "status": "error", 
