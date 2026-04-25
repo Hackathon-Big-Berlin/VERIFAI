@@ -2,16 +2,28 @@ import asyncio
 import time
 import os
 import json
+import logging
 import dotenv
 from typing import List, Dict, Any
 from tavily import AsyncTavilyClient
 from google import genai
 
 dotenv.load_dotenv()
+logger = logging.getLogger("agent")
 
 # Constants
 GEMINI_MODEL_NAME = 'gemini-3.1-flash-lite-preview'
 SEARCH_DEPTH = 'advanced'
+
+
+def _get_gemini_api_key() -> str:
+    """Returns Gemini API key from explicit env vars, or raises a clear error."""
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "Missing Gemini API key. Set GOOGLE_API_KEY (preferred) or GEMINI_API_KEY."
+        )
+    return api_key
 
 GEMINI_PROMPT = '''
 You are an expert, highly objective fact-checking AI. Your sole purpose is to evaluate the accuracy of a specific CLAIM based strictly on the provided CONTEXT. The CONTEXT consists of search results, including snippets and their source URLs.
@@ -93,6 +105,14 @@ async def _process_single_claim(claim: str, tavily_client: AsyncTavilyClient, ge
             model=GEMINI_MODEL_NAME, 
             contents=final_prompt
         )
+
+        # Debug visibility: emit Gemini raw fact-check output on every run.
+        raw_fact_check_output = response.text if response and response.text else ""
+        logger.debug(
+            "[FACT_CHECK][GEMINI_RAW_OUTPUT] claim=%s output=%s",
+            claim,
+            raw_fact_check_output,
+        )
         
         # 3. Parse and Validate JSON
         cleaned_text = _clean_json_response(response.text)
@@ -133,7 +153,7 @@ async def run_fact_check_pipeline(text_block: str) -> List[Dict[str, Any]]:
 
     try:
         tavily_client = AsyncTavilyClient()
-        gemini_client = genai.Client()
+        gemini_client = genai.Client(api_key=_get_gemini_api_key())
     except Exception as e:
         return [{
             "claim": "System", 

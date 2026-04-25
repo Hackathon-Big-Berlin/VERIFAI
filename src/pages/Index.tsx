@@ -30,12 +30,40 @@ const Index = () => {
     disconnect,
   } = useLiveKitRoom();
 
-  // Demo first, live sessions after. The demo block stays so designers /
-  // teammates can always see the highlight design even mid-session.
-  const sessionsForPanel = useMemo(
-    () => [DEMO_SESSION, ...liveSessions],
-    [liveSessions],
-  );
+  useEffect(() => {
+    console.log("[ui] livekit state", {
+      status: livekitStatus,
+      error: livekitError,
+      sessions: sessions.length,
+    });
+  }, [livekitStatus, livekitError, sessions.length]);
+
+  useEffect(() => {
+    const latestSession = sessions[sessions.length - 1];
+    if (!latestSession) return;
+    console.log("[ui] latest transcript session", {
+      id: latestSession.id,
+      startedAt: latestSession.startedAt,
+      committedLength: latestSession.text.length,
+      pendingLength: latestSession.pendingText.length,
+    });
+  }, [sessions]);
+
+  // Temporary: drip-feed mock fact-check flags so the sidebar isn't empty during dev.
+  // Remove this once Lukas's `flag` payloads start arriving on the data channel.
+  useEffect(() => {
+    let currentIndex = 0;
+    const intervalId = window.setInterval(() => {
+      const nextFlag = factCheckFlags[currentIndex];
+      if (!nextFlag) {
+        window.clearInterval(intervalId);
+        return;
+      }
+      setVisibleFlags((currentFlags) => [...currentFlags, nextFlag]);
+      currentIndex += 1;
+    }, 4000);
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   return (
     <main className="flex min-h-screen flex-col bg-background text-foreground lg:flex-row">
