@@ -1,14 +1,27 @@
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { TranscriptSession } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import type { FactCheckFlag, FactCheckVerdict, TranscriptSession } from "@/lib/types";
 
 type TranscriptPanelProps = {
   sessions: TranscriptSession[];
+  flags: FactCheckFlag[];
   // Whether the most recent session is still receiving transcripts. Drives
   // the "Listening" indicator and styles the active block.
   isLive: boolean;
 };
 
-export function TranscriptPanel({ sessions, isLive }: TranscriptPanelProps) {
+const verdictHighlight: Record<FactCheckVerdict, string> = {
+  "TRUE": "bg-green-100 text-green-900 ring-1 ring-green-300",
+  "FALSE": "bg-red-100 text-red-900 ring-1 ring-red-300",
+  "PARTIALLY TRUE": "bg-orange-100 text-orange-900 ring-1 ring-orange-300",
+  "INCONCLUSIVE": "bg-slate-200 text-slate-800 ring-1 ring-slate-300",
+};
+
+function highlightClassFor(verdict: string): string {
+  return verdictHighlight[verdict as FactCheckVerdict] ?? verdictHighlight["INCONCLUSIVE"];
+}
+
+export function TranscriptPanel({ sessions, flags, isLive }: TranscriptPanelProps) {
   return (
     <section className="flex min-h-0 flex-1 flex-col border-b border-border bg-background lg:border-b-0 lg:border-r">
       <header className="flex items-center justify-between border-b border-border px-4 py-4 md:px-6">
@@ -33,7 +46,10 @@ export function TranscriptPanel({ sessions, isLive }: TranscriptPanelProps) {
             sessions.map((session, index) => {
               const isActive = isLive && index === sessions.length - 1;
               const hasPending = session.pendingText.length > 0;
-              const hasAnyText = session.text.length > 0 || hasPending;
+              // Inline every flag's claim as a colored span in the active session
+              // so the mock payloads render directly in the transcript flow.
+              const inlineFlags = isActive ? flags : [];
+              const hasAnyText = session.text.length > 0 || hasPending || inlineFlags.length > 0;
 
               return (
                 <article
@@ -52,9 +68,20 @@ export function TranscriptPanel({ sessions, isLive }: TranscriptPanelProps) {
                   {hasAnyText ? (
                     <p className="text-base leading-7 text-foreground md:text-lg">
                       {session.text}
+                      {inlineFlags.map((flag, i) => (
+                        <span key={`flag-${i}-${flag.verdict}`}>
+                          {(session.text || i > 0) ? " " : ""}
+                          <mark
+                            className={cn("rounded px-1 py-0.5", highlightClassFor(flag.verdict))}
+                            title={flag.reasoning}
+                          >
+                            {flag.claim}
+                          </mark>
+                        </span>
+                      ))}
                       {hasPending ? (
                         <>
-                          {session.text ? " " : ""}
+                          {(session.text || inlineFlags.length > 0) ? " " : ""}
                           <span className="text-muted-foreground italic">{session.pendingText}</span>
                         </>
                       ) : null}

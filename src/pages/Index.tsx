@@ -43,7 +43,7 @@ const Index = () => {
         )}
         {livekitError ? <span className="text-destructive">{livekitError}</span> : null}
       </div>
-      <TranscriptPanel sessions={sessions} isLive={livekitStatus === "connected"} />
+      <TranscriptPanel sessions={sessions} flags={flags} isLive={livekitStatus === "connected"} />
       
       {/* Added: Pass the LiveKit flags directly into the sidebar */}
       <FactCheckSidebar flags={flags} />

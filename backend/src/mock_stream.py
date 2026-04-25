@@ -6,7 +6,7 @@ from livekit.agents import JobContext
 async def start_mock_fact_check_stream(ctx: JobContext, logger: logging.Logger):
     """
     Simulates the Backend 2 output pipeline by rotating through all possible verdict states.
-    Publishes a dummy payload every 15 seconds to unblock frontend UI development.
+    Publishes a dummy payload every 3 seconds to unblock frontend UI development.
     """
     
     # Array containing diverse examples covering all 4 verdict states
@@ -44,8 +44,8 @@ async def start_mock_fact_check_stream(ctx: JobContext, logger: logging.Logger):
     payload_index = 0
 
     while True:
-        # Yield control to the event loop for 15 seconds (Non-blocking)
-        await asyncio.sleep(15)
+        # Yield control to the event loop for 3 seconds (Non-blocking)
+        await asyncio.sleep(3)
         
         # Cycle to the next payload in the array
         current_payload = mock_payloads[payload_index]

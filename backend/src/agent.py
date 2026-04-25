@@ -17,8 +17,6 @@ from livekit.plugins import ai_coustics, silero
 
 from fact_checker import run_fact_check_pipeline
 
-import mock_stream
-
 logger = logging.getLogger("agent")
 MAX_CONTEXT_WORDS = 500
 
@@ -123,26 +121,41 @@ async def my_agent(ctx: JobContext):
         # browser microphone audio and publish transcript events back to the frontend.
         await ctx.connect()
 
-        #Mock Fact Check StreamL
-        # We now dispatch that external function as a background task.
-        mock_task = asyncio.create_task(mock_stream.start_mock_fact_check_stream(ctx, logger))
-        
-        # Store a strong reference to prevent Python's garbage collector from destroying it
-        pending_publishes.add(mock_task)
-        mock_task.add_done_callback(pending_publishes.discard)
-        # -------------------------------------
         # Start the session, which initializes the voice pipeline and warms up the models
         await session.start(
-                agent=Agent(instructions="Transcribe user speech. Do not respond."),
-                room=ctx.room,
-                room_options=room_io.RoomOptions(
-                    audio_input=room_io.AudioInputOptions(
-                        noise_cancellation=ai_coustics.audio_enhancement(
-                            model=ai_coustics.EnhancerModel.QUAIL_VF_L
+            agent=Agent(instructions="Transcribe user speech. Do not respond."),
+            room=ctx.room,
+            room_options=room_io.RoomOptions(
+                audio_input=room_io.AudioInputOptions(
+                    noise_cancellation=ai_coustics.audio_enhancement(
+                        # QUAIL_VF_L  → best for single foreground speaker (your case)
+                        # QUAIL_L     → better if you ever need multi-speaker / diarization
+                        model=ai_coustics.EnhancerModel.QUAIL_VF_L,
+
+                        # enhancement_level controls suppression aggressiveness:
+                        #   0.5 = conservative — always preserves foreground speech, minimal artifacts
+                        #   0.8 = balanced    — optimal WER on challenging real-world data (recommended)
+                        #   1.0 = aggressive  — maximum suppression, risk of over-filtering quiet speech
+                        model_parameters=ai_coustics.ModelParameters(enhancement_level=0.8),
+
+                        # VAD settings tune how the model detects speech boundaries
+                        vad_settings=ai_coustics.VadSettings(
+                            # How long (seconds) to keep VAD "on" after speech ends — prevents clipping
+                            # Range: 0.0–1.0s  |  Lower = tighter turn-taking, Higher = less cutoff
+                            speech_hold_duration=0.03,
+
+                            # How sensitive VAD is to speech vs noise
+                            # Range: 1.0–15.0  |  Higher = more sensitive (catches whispers, but more false triggers)
+                            sensitivity=6.0,
+
+                            # Minimum duration (seconds) before a segment is treated as speech
+                            # Range: 0.0–1.0s  |  Raise this to filter out very short utterances/clicks
+                            minimum_speech_duration=0.0,
                         ),
                     ),
                 ),
-            )
+            ),
+        )
     finally:
         fact_check_worker_task.cancel()
         await asyncio.gather(fact_check_worker_task, return_exceptions=True)
