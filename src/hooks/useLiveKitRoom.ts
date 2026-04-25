@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ParticipantKind, Room, RoomEvent, type RemoteParticipant } from "livekit-client";
-import type { TranscriptLine } from "@/lib/types";
+import type { TranscriptSession } from "@/lib/types";
 
 // Shape of the JSON we publish from the Python agent (see backend/src/agent.py).
 // Frontend renders transcripts live; flag verdicts will land here too once Lukas's stream is wired.
@@ -11,43 +11,41 @@ type DataChannelMessage =
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
 
-const SPEAKER_LABEL = "Speaker";
-
 function formatTimestamp(date: Date): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function newSessionId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 const LIVEKIT_URL = import.meta.env.VITE_LIVEKIT_URL as string | undefined;
 const LIVEKIT_TOKEN = import.meta.env.VITE_LIVEKIT_TOKEN as string | undefined;
 
-// Connect to a LiveKit room, publish the mic, and log every Data Channel
-// message received from the Python agent. Returns a connect/disconnect API
-// plus the live status so the UI can render a button.
+// Connect to a LiveKit room, publish the mic, and accumulate every Data Channel
+// transcript event into the *current* session block. Each Connect→Disconnect
+// cycle gets its own block; older blocks are preserved so the UI can stack them.
 export function useLiveKitRoom() {
   const roomRef = useRef<Room | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [transcripts, setTranscripts] = useState<TranscriptLine[]>([]);
-  // Track whether the last appended line is still interim — if so, replace it
-  // on the next event instead of appending a fresh row. Reset on each `is_final: true`.
-  const pendingLineIdRef = useRef<string | null>(null);
+  const [sessions, setSessions] = useState<TranscriptSession[]>([]);
 
-  const connect = useCallback(async () => {
+  // Establish the underlying LiveKit room connection once and keep it open
+  // for the page lifetime. This avoids the dispatch cold-start delay every
+  // time the user toggles Connect/Disconnect.
+  const ensureRoomConnected = useCallback(async (): Promise<Room | null> => {
+    if (roomRef.current) return roomRef.current;
+
     if (!LIVEKIT_URL || !LIVEKIT_TOKEN) {
       const msg = "Missing VITE_LIVEKIT_URL or VITE_LIVEKIT_TOKEN in .env";
       console.error(msg);
       setError(msg);
       setStatus("error");
-      return;
+      return null;
     }
-
-    if (roomRef.current) {
-      console.log("[livekit] already connected");
-      return;
-    }
-
-    setStatus("connecting");
-    setError(null);
 
     const room = new Room({
       // Auto-tune mic settings for speech use case
@@ -79,43 +77,29 @@ export function useLiveKitRoom() {
           typeof (message as { text?: unknown }).text === "string"
         ) {
           const transcript = message as { type: "transcript"; text: string; is_final: boolean };
-          setTranscripts((previousLines) => {
-            const nextLines = [...previousLines];
-            const trailing = nextLines[nextLines.length - 1];
-            const isUpdatingPending =
-              pendingLineIdRef.current !== null &&
-              trailing !== undefined &&
-              trailing.id === pendingLineIdRef.current;
+          setSessions((previousSessions) => {
+            // Transcripts arriving without a current session means the mic was
+            // muted mid-flush — append to the most recent block anyway so
+            // Deepgram's trailing final isn't lost.
+            if (previousSessions.length === 0) return previousSessions;
 
-            if (isUpdatingPending) {
-              // Same utterance, newer text — overwrite the trailing pending line.
-              nextLines[nextLines.length - 1] = {
-                ...trailing,
-                text: transcript.text,
-              };
+            const nextSessions = [...previousSessions];
+            const currentSession = { ...nextSessions[nextSessions.length - 1] };
+
+            if (transcript.is_final) {
+              // Commit this utterance into the running paragraph and clear the interim slot.
+              currentSession.text = currentSession.text
+                ? `${currentSession.text} ${transcript.text}`
+                : transcript.text;
+              currentSession.pendingText = "";
             } else {
-              // New utterance — start a new line and remember its id so future
-              // interim updates target it.
-              const newLineId =
-                typeof crypto !== "undefined" && "randomUUID" in crypto
-                  ? crypto.randomUUID()
-                  : `line-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-              pendingLineIdRef.current = newLineId;
-              nextLines.push({
-                id: newLineId,
-                timestamp: formatTimestamp(new Date()),
-                speaker: SPEAKER_LABEL,
-                text: transcript.text,
-              });
+              // Interim — overwrite previous interim text for this utterance.
+              currentSession.pendingText = transcript.text;
             }
 
-            return nextLines;
+            nextSessions[nextSessions.length - 1] = currentSession;
+            return nextSessions;
           });
-
-          // Final transcript closes the pending utterance — next event starts a fresh line.
-          if (transcript.is_final) {
-            pendingLineIdRef.current = null;
-          }
         }
       },
     );
@@ -136,36 +120,59 @@ export function useLiveKitRoom() {
       });
     });
 
+    // The room can drop unexpectedly (network blip, server kick). When that
+    // happens, clear the ref so the next Connect rebuilds it from scratch.
     room.on(RoomEvent.Disconnected, () => {
-      console.log("[livekit] disconnected");
-      setStatus("idle");
+      console.log("[livekit] room disconnected");
       roomRef.current = null;
+      setStatus("idle");
     });
 
+    await room.connect(LIVEKIT_URL, LIVEKIT_TOKEN);
+    const agentParticipant = Array.from(room.remoteParticipants.values()).find(
+      (participant) => participant.kind === ParticipantKind.AGENT,
+    );
+    if (!agentParticipant) {
+      console.warn("[livekit] connected, but no agent participant has joined yet");
+    }
+    roomRef.current = room;
+    console.log("[livekit] room established as", room.localParticipant.identity);
+    return room;
+  }, []);
+
+  const connect = useCallback(async () => {
+    setStatus("connecting");
+    setError(null);
+
     try {
-      await room.connect(LIVEKIT_URL, LIVEKIT_TOKEN);
-      const agentParticipant = Array.from(room.remoteParticipants.values()).find(
-        (participant) => participant.kind === ParticipantKind.AGENT,
-      );
-      if (!agentParticipant) {
-        console.warn("[livekit] connected, but no agent participant has joined yet");
-      }
-      // Publish the local mic so the agent has audio to transcribe.
+      const room = await ensureRoomConnected();
+      if (!room) return;
+      // Mic on → audio flows to the agent → transcripts arrive on the data channel.
       await room.localParticipant.setMicrophoneEnabled(true);
-      roomRef.current = room;
+      // Open a fresh transcript block for this Connect press. Older blocks
+      // remain above it so users can review past sessions.
+      setSessions((previousSessions) => [
+        ...previousSessions,
+        {
+          id: newSessionId(),
+          startedAt: formatTimestamp(new Date()),
+          text: "",
+          pendingText: "",
+        },
+      ]);
       setStatus("connected");
-      console.log("[livekit] connected as", room.localParticipant.identity);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[livekit] connect failed", err);
       setError(msg);
       setStatus("error");
     }
-  }, []);
+  }, [ensureRoomConnected]);
 
+  // Disconnect just mutes the mic — the LiveKit room and the agent stay live
+  // so the next Connect is instant. The current session block freezes in place.
   const disconnect = useCallback(async () => {
-    await roomRef.current?.disconnect();
-    roomRef.current = null;
+    await roomRef.current?.localParticipant.setMicrophoneEnabled(false);
     setStatus("idle");
   }, []);
 
@@ -177,5 +184,5 @@ export function useLiveKitRoom() {
     };
   }, []);
 
-  return { status, error, transcripts, connect, disconnect };
+  return { status, error, sessions, connect, disconnect };
 }
