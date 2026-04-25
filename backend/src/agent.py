@@ -62,9 +62,9 @@ async def my_agent(ctx: JobContext):
     context_version = 0
     fact_check_queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
 
-    # STEP 1 — minimal worker. Proves queue→worker plumbing in isolation,
-    # without invoking the pipeline. We'll layer the pipeline + publish back
-    # in once this is confirmed working.
+    # STEP 2 — run the real pipeline and log the structured result.
+    # Still no publishing (that's step 3). Catches all exceptions so a
+    # failing pipeline run never kills the loop.
     async def fact_check_worker():
         while True:
             version, context_snapshot = await fact_check_queue.get()
@@ -74,15 +74,23 @@ async def my_agent(ctx: JobContext):
                     version,
                     context_snapshot[:120],
                 )
+                results = await run_fact_check_pipeline(context_snapshot)
+                logger.info(
+                    "[worker] pipeline result version=%s:\n%s",
+                    version,
+                    json.dumps(results, indent=2),
+                )
+            except Exception:
+                logger.exception("[worker] failed version=%s", version)
             finally:
                 fact_check_queue.task_done()
 
     fact_check_worker_task = asyncio.create_task(fact_check_worker())
 
-    # STEP 1 self-test: inject a known item so we can confirm the worker
-    # picks it up the moment the agent dispatches, with zero dependency on
-    # STT, mic permissions, or external APIs.
-    fact_check_queue.put_nowait((-1, "test snapshot — worker plumbing check"))
+    # STEP 2 self-test: a checkable false claim so we can see the full
+    # pipeline (claim extraction → search → verdict) light up on dispatch
+    # without depending on the user speaking.
+    fact_check_queue.put_nowait((-1, "The capital of France is Berlin."))
 
     def forward_transcript_to_data_channel(event):
         nonlocal context_window, context_version
