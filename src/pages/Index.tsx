@@ -19,6 +19,25 @@ const Index = () => {
     disconnect,
   } = useLiveKitRoom();
 
+  useEffect(() => {
+    console.log("[ui] livekit state", {
+      status: livekitStatus,
+      error: livekitError,
+      sessions: sessions.length,
+    });
+  }, [livekitStatus, livekitError, sessions.length]);
+
+  useEffect(() => {
+    const latestSession = sessions[sessions.length - 1];
+    if (!latestSession) return;
+    console.log("[ui] latest transcript session", {
+      id: latestSession.id,
+      startedAt: latestSession.startedAt,
+      committedLength: latestSession.text.length,
+      pendingLength: latestSession.pendingText.length,
+    });
+  }, [sessions]);
+
   // Temporary: drip-feed mock fact-check flags so the sidebar isn't empty during dev.
   // Remove this once Lukas's `flag` payloads start arriving on the data channel.
   useEffect(() => {
