@@ -34,7 +34,6 @@ async def my_agent(ctx: JobContext):
         stt=inference.STT(model="deepgram/nova-3", language="multi"),
     )
 
-    # 👉 changes start here 👇
     # TruWord delivery stream: forward every Deepgram transcript event to the
     # LiveKit Data Channel as JSON so the frontend can render it (and later we
     # can layer in fact-check verdicts on the same channel under a different topic).
@@ -67,7 +66,6 @@ async def my_agent(ctx: JobContext):
         task.add_done_callback(pending_publishes.discard)
 
     session.on("user_input_transcribed", forward_transcript_to_data_channel)
-    # 👆 changes end here 👆
 
     # Join the room before starting the voice pipeline so the agent can receive
     # browser microphone audio and publish transcript events back to the frontend.
@@ -80,9 +78,6 @@ async def my_agent(ctx: JobContext):
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
                 noise_cancellation=ai_coustics.audio_enhancement(
-                # Added: Replaced with the block below to include the enhancement_level parameter.
-                # Logical process: We lower the enhancement level to a conservative 0.5. 
-                # This prevents the filter from clipping soft syllables, giving the Deepgram STT cleaner human speech to parse.
                     model=ai_coustics.EnhancerModel.QUAIL_VF_L
                 ),
             ),
