@@ -21,7 +21,7 @@ export function FactCheckSidebar({ flags }: FactCheckSidebarProps) {
               No claims flagged yet.
             </div>
           ) : (
-            flags.map((flag) => <FactCheckCard key={`${flag.sentence}-${flag.verdict}`} flag={flag} />)
+            flags.map((flag) => <FactCheckCard key={`${flag.claim}|${flag.verdict}`} flag={flag} />)
           )}
         </div>
       </ScrollArea>
