@@ -144,9 +144,9 @@ async def run_fact_check_pipeline(text_block: str) -> List[Dict[str, Any]]:
         }]
 
     try:
-        # Step 1: Extract claims as strict JSON
+        # Step 1: Extract claims as strict JSON (Now correctly yielding to the event loop)
         prompt = _get_claims_prompt(text_block)
-        parsed_data = gemini_client.models.generate_content(
+        parsed_data = await gemini_client.aio.models.generate_content(
             model=GEMINI_MODEL_NAME, contents=prompt
         )
         
