@@ -143,6 +143,10 @@ async def my_agent(ctx: JobContext):
     session.on("user_input_transcribed", forward_transcript_to_data_channel)
     # 👆 changes end here 👆
 
+    # Join the room before starting the voice pipeline so the agent can receive
+    # browser microphone audio and publish transcript events back to the frontend.
+    await ctx.connect()
+
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
         agent=Assistant(),
@@ -155,9 +159,6 @@ async def my_agent(ctx: JobContext):
             ),
         ),
     )
-
-    # Join the room and connect to the user
-    await ctx.connect()
 
 
 if __name__ == "__main__":
