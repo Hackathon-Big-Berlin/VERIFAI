@@ -16,7 +16,7 @@ export type TranscriptSession = {
   pendingText: string;
 };
 
-export type FactCheckVerdict = "true" | "false" | "disputed" | "inconclusive";
+export type FactCheckVerdict = "disputed" | "false" | "needs-context";
 
 export type FactCheckFlag = {
   type: "flag";
@@ -24,7 +24,4 @@ export type FactCheckFlag = {
   verdict: FactCheckVerdict;
   reason: string;
   source: string;
-  // Optional: scopes the highlight to a specific transcript session block.
-  // When omitted, the highlighter searches every session for a verbatim match.
-  sessionId?: string;
 };

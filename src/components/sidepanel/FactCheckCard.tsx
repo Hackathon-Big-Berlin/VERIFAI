@@ -1,7 +1,12 @@
 import { ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { FactCheckFlag } from "@/lib/types";
-import { VERDICT_BADGE_CLASS, VERDICT_LABEL } from "@/lib/verdictStyles";
+
+const verdictLabel: Record<FactCheckFlag["verdict"], string> = {
+  disputed: "Disputed",
+  false: "False",
+  "needs-context": "Needs context",
+};
 
 type FactCheckCardProps = {
   flag: FactCheckFlag;
@@ -11,9 +16,7 @@ export function FactCheckCard({ flag }: FactCheckCardProps) {
   return (
     <article className="rounded-md border border-border bg-card p-4 text-card-foreground shadow-sm">
       <div className="mb-3 flex items-start justify-between gap-3">
-        <Badge variant="outline" className={VERDICT_BADGE_CLASS[flag.verdict]}>
-          {VERDICT_LABEL[flag.verdict]}
-        </Badge>
+        <Badge variant={flag.verdict === "false" ? "destructive" : "secondary"}>{verdictLabel[flag.verdict]}</Badge>
         <span className="font-mono text-xs uppercase tracking-normal text-muted-foreground">{flag.type}</span>
       </div>
       <blockquote className="border-l-2 border-primary pl-3 text-sm font-medium leading-6 text-foreground">
