@@ -28,3 +28,12 @@ export type FactCheckFlag = {
   // When omitted, the highlighter searches every session for a verbatim match.
   sessionId?: string;
 };
+
+// Subjective / normative utterances picked out by Gemini's classification step.
+// We don't fact-check these — they only feed the stats header so the audience
+// can see how much of what's being said is opinion vs verifiable claim.
+export type Opinion = {
+  type: "opinion";
+  sentence: string;
+  sessionId?: string;
+};
