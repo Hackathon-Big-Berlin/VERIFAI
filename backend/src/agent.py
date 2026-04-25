@@ -17,8 +17,6 @@ from livekit.plugins import ai_coustics, silero
 
 from fact_checker import run_fact_check_pipeline
 
-import mock_stream
-
 logger = logging.getLogger("agent")
 MAX_CONTEXT_WORDS = 500
 
@@ -189,15 +187,6 @@ async def my_agent(ctx: JobContext):
         # browser microphone audio and publish transcript events back to the frontend.
         await ctx.connect()
 
-        #Mock Fact Check StreamL
-        # We now dispatch that external function as a background task.
-        mock_task = asyncio.create_task(mock_stream.start_mock_fact_check_stream(ctx, logger))
-        
-        # Store a strong reference to prevent Python's garbage collector from destroying it
-        pending_publishes.add(mock_task)
-        mock_task.add_done_callback(pending_publishes.discard)
-        # -------------------------------------
-        # Start the session, which initializes the voice pipeline and warms up the models
         await session.start(
                 agent=Agent(instructions="Transcribe user speech. Do not respond."),
                 room=ctx.room,
