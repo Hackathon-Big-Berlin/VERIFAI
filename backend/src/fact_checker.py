@@ -39,6 +39,24 @@ def _get_tavily_api_key() -> str:
     return api_key
 
 
+# Lazy module-level singletons. Constructors are synchronous so there's no
+# race in single-threaded asyncio: any coroutine calling _clients() will
+# complete the init before another coroutine can interleave. Re-using the
+# same clients across calls avoids burning CPU + sockets on a fresh httpx
+# session per fact-check (matters most under nuanced vetting bursts).
+_tavily_client: AsyncTavilyClient | None = None
+_gemini_client: genai.Client | None = None
+
+
+def _clients() -> tuple[AsyncTavilyClient, genai.Client]:
+    global _tavily_client, _gemini_client
+    if _tavily_client is None:
+        _tavily_client = AsyncTavilyClient(api_key=_get_tavily_api_key())
+    if _gemini_client is None:
+        _gemini_client = genai.Client(api_key=_get_gemini_api_key())
+    return _tavily_client, _gemini_client
+
+
 GATEKEEPER_PROMPT = """Read BACKGROUND_CONTEXT only to resolve pronouns and understand what the speaker is referring to. Then evaluate the TARGET_SENTENCE.
 
 Return is_verifiable=true ONLY if the target sentence contains a factual claim that could be verified by web search (e.g., "Paris is the capital of France", "Cheetahs are the fastest land animal"). Set it to false for opinions ("I think it's nice"), filler ("hello", "you know"), incomplete fragments ("the average human needs"), and personal statements ("my friend Lucas is tall").
@@ -86,8 +104,7 @@ async def fact_check_sentence(
     }
 
     try:
-        tavily_client = AsyncTavilyClient(api_key=_get_tavily_api_key())
-        gemini_client = genai.Client(api_key=_get_gemini_api_key())
+        tavily_client, gemini_client = _clients()
     except Exception as e:
         logger.exception("Failed to initialize AI clients")
         result_data["reasoning"] = f"Failed to initialize AI clients: {e!s}"
