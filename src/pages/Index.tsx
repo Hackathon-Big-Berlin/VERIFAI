@@ -66,7 +66,7 @@ const Index = () => {
   const liveUserDraft = debateStage === "active" ? draftText : "";
 
   return (
-    <div className="flex min-h-screen flex-col bg-background text-foreground">
+    <div className="flex h-screen flex-col bg-background text-foreground">
       <Meter
         flags={flags}
         activeSessionId={activeSessionId}
@@ -127,7 +127,7 @@ const Index = () => {
         }
       />
 
-      <main className="relative flex flex-1 flex-col lg:flex-row">
+      <main className="relative flex flex-1 flex-col overflow-hidden lg:flex-row">
         {isDebate ? (
           <DebateChatPanel
             turns={debateTurns}
