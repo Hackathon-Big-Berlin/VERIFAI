@@ -18,18 +18,48 @@ export type TranscriptSession = {
 
 export type FactCheckVerdict = "TRUE" | "FALSE" | "PARTIALLY TRUE" | "INCONCLUSIVE";
 
+// Find this interface in your types file and update the keys
 export interface FactCheckFlag {
   type: "flag";
-  claim: string;
+  claim: string;       // Changed from 'sentence'
   verdict: string;
-  reasoning: string;
-  sources: string[];
-  // Tagged by the frontend (useLiveKitRoom) with the active session id when
-  // the flag arrives. Used by Meter to scope counts to the current session.
-  sessionId: string;
-  // True when the verdict was likely informed by user-uploaded trusted
-  // context (lexical-overlap heuristic on the backend; see
-  // backend/src/context_loader.py:context_likely_relevant). Drives the
-  // "from context" badge on the side-panel card.
-  used_trusted_context?: boolean;
+  reasoning: string;   // Changed from 'reason'
+  sources: string[];   // Changed from 'source' (string) to array
+}
+
+export type DebateRole = "user" | "model";
+
+export interface DebateRubricScores {
+  logicalConsistency: number;
+  evidenceQuality: number;
+  rebuttalEffectiveness: number;
+  clarityStructure: number;
+  responsiveness: number;
+}
+
+export interface DebateTurn {
+  id: string;
+  role: DebateRole;
+  text: string;
+  timestamp: string;
+}
+
+export interface DebateClaimAnnotation {
+  claim: string;
+  strength: "strong" | "weak";
+  reason: string;
+}
+
+export interface DebateTurnScore {
+  turnId: string;
+  scores: DebateRubricScores;
+  strongClaims: DebateClaimAnnotation[];
+  weakClaims: DebateClaimAnnotation[];
+  coachingSuggestion: string;
+}
+
+export interface DebateFinalScore {
+  overall: number;
+  scores: DebateRubricScores;
+  summary: string;
 }
