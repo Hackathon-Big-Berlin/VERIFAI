@@ -16,7 +16,7 @@ from tavily import AsyncTavilyClient
 from google import genai
 from google.genai import types
 
-from schemas import VERDICT_SCHEMA
+from schemas import GATEKEEPER_SCHEMA, VERDICT_SCHEMA
 
 dotenv.load_dotenv()
 logger = logging.getLogger("agent")
@@ -39,11 +39,17 @@ def _get_tavily_api_key() -> str:
     return api_key
 
 
-VERDICT_PROMPT = """You are an expert, highly objective fact-checking AI. Evaluate the accuracy of the CLAIM based strictly on the provided CONTEXT (search snippets + source URLs).
+GATEKEEPER_PROMPT = """Read BACKGROUND_CONTEXT only to resolve pronouns and understand what the speaker is referring to. Then evaluate the TARGET_SENTENCE.
 
-Use BACKGROUND_CONTEXT only to resolve pronouns and understand what the speaker is referring to — not as evidence.
+Return is_verifiable=true ONLY if the target sentence contains a factual claim that could be verified by web search (e.g., "Paris is the capital of France", "Cheetahs are the fastest land animal"). Set it to false for opinions ("I think it's nice"), filler ("hello", "you know"), incomplete fragments ("the average human needs"), and personal statements ("my friend Lucas is tall").
 
-Act as a ruthless evaluator. Do not rely on your internal knowledge. If the SEARCH_RESULTS lack the answer, return INCONCLUSIVE.
+If verifiable, generate the optimal Google Search query to verify the claim, resolving any pronouns from the context.
+"""
+
+
+VERDICT_PROMPT = """You are an expert, highly objective fact-checking AI. Evaluate the accuracy of the CLAIM based strictly on the provided SEARCH_RESULTS (snippets + source URLs).
+
+Act as a ruthless evaluator. Do not rely on your internal knowledge. If the search results lack the answer, return INCONCLUSIVE.
 
 Return a verdict, concise reasoning citing the search results, and 1-3 source URLs that support your verdict.
 """
@@ -78,16 +84,37 @@ async def fact_check_sentence(sentence: str, history: str) -> Dict[str, Any]:
         return result_data
 
     try:
-        # 1. Web search.
-        search_query = (
+        # 1. Gatekeeper. Cheap pass to filter out opinion/filler/fragments
+        # before burning a Tavily call.
+        gatekeeper_prompt = (
+            f"{GATEKEEPER_PROMPT}\n"
+            f"<BACKGROUND_CONTEXT>{history}</BACKGROUND_CONTEXT>\n"
+            f"<TARGET_SENTENCE>{sentence}</TARGET_SENTENCE>"
+        )
+        gatekeeper_response = await gemini_client.aio.models.generate_content(
+            model=GEMINI_MODEL_NAME,
+            contents=gatekeeper_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=GATEKEEPER_SCHEMA,
+            ),
+        )
+        gatekeeper_data = json.loads(gatekeeper_response.text)
+        if not gatekeeper_data.get("is_verifiable"):
+            logger.debug("[gatekeeper] skipped non-verifiable: %s", sentence)
+            return {"claim": sentence, "status": "skipped"}
+
+        search_query = gatekeeper_data.get("search_query", "").strip() or (
             f"Verify the claim: {sentence}. Provide supporting and contradicting evidence with dates and sources."
         )
+        logger.info("[gatekeeper] verifiable claim, search query: %s", search_query)
+
+        # 2. Web search.
         search_response = await tavily_client.search(search_query, search_depth=SEARCH_DEPTH)
 
-        # 2. Verdict — schema-enforced JSON output.
+        # 3. Verdict — schema-enforced JSON output.
         verdict_prompt = (
             f"{VERDICT_PROMPT}\n"
-            f"<BACKGROUND_CONTEXT>{history}</BACKGROUND_CONTEXT>\n"
             f"<CLAIM>{sentence}</CLAIM>\n"
             f"<SEARCH_RESULTS>{search_response}</SEARCH_RESULTS>"
         )

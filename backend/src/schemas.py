@@ -10,7 +10,33 @@ Two roles:
 from typing import List, TypedDict
 
 
-# Per-claim verdict. Schema-enforced so we never need to clean markdown
+# Stage 1 — gatekeeper. Cheap call: is this sentence even worth searching?
+# Skips opinion/filler/incomplete-fragment speech before we burn a Tavily
+# call. When verifiable, the LLM also returns a tuned search query that
+# resolves any pronouns from the surrounding history.
+GATEKEEPER_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "is_verifiable": {
+            "type": "BOOLEAN",
+            "description": (
+                "True if the target sentence contains a factual claim that can be "
+                "verified via web search."
+            ),
+        },
+        "search_query": {
+            "type": "STRING",
+            "description": (
+                "Optimal Google Search query to verify the claim. Resolve any "
+                "pronouns using the background context. Empty if not verifiable."
+            ),
+        },
+    },
+    "required": ["is_verifiable"],
+}
+
+
+# Stage 2 — verdict. Schema-enforced so we never need to clean markdown
 # fences or recover from malformed JSON.
 VERDICT_SCHEMA = {
     "type": "OBJECT",
