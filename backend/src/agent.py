@@ -1,6 +1,10 @@
 import asyncio
 import json
 import logging
+import os
+from collections import deque
+from datetime import datetime, timezone
+from typing import Literal
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -14,10 +18,13 @@ from livekit.agents import (
 )
 from livekit.plugins import ai_coustics, silero
 
-from buffer import TranscriptBuffer
-from fact_checker import fact_check_sentence
+from debate_coach import compute_final_score, evaluate_user_turn, generate_model_turn
 
 logger = logging.getLogger("agent")
+MAX_CONTEXT_WORDS = 500
+ENABLE_DEBATE_COACH = os.getenv("ENABLE_DEBATE_COACH", "1") == "1"
+from buffer import TranscriptBuffer
+from fact_checker import fact_check_sentence
 
 
 def configure_logging() -> None:
@@ -50,12 +57,19 @@ async def my_agent(ctx: JobContext):
     # Strong refs to in-flight transcript-publish tasks so they aren't GC'd
     # mid-await (ruff RUF006).
     pending_publishes: set[asyncio.Task] = set()
+    # Sliding context window for downstream Gemini prompting.
+    # This is intentionally plain text for now and only includes finalized STT chunks.
+    context_words: deque[str] = deque(maxlen=MAX_CONTEXT_WORDS)
+    context_window: str = ""
+    context_version = 0
+    app_mode: Literal["analysis", "debate"] = "analysis"
+    fact_check_queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
+    debate_queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
+    debate_score_rows: list[dict[str, int]] = []
     # Sentence buffer that emits complete sentences (with recent-sentence
     # history for pronoun resolution) as STT finals arrive.
     transcript_buffer = TranscriptBuffer()
     sentence_version = 0
-    # Queue items: (version, sentence, history). One sentence per fact-check.
-    fact_check_queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
     # Dedup key = normalized claim (lowercased, stripped of punctuation/space).
     # Maps to the last verdict we published for that claim; we only re-publish
     # when the verdict changes, and the frontend replaces the existing card.
@@ -135,7 +149,124 @@ async def my_agent(ctx: JobContext):
             finally:
                 fact_check_queue.task_done()
 
+    async def debate_worker():
+        nonlocal app_mode
+        while True:
+            version, user_turn_text, context_snapshot = await debate_queue.get()
+            if app_mode != "debate":
+                continue
+            turn_id = f"turn-{version}"
+            timestamp = datetime.now(timezone.utc).isoformat()
+            try:
+                user_turn_payload = json.dumps(
+                    {
+                        "type": "debate_turn",
+                        "role": "user",
+                        "turnId": turn_id,
+                        "text": user_turn_text,
+                        "timestamp": timestamp,
+                    }
+                ).encode("utf-8")
+                await ctx.room.local_participant.publish_data(
+                    user_turn_payload, reliable=True, topic="debate"
+                )
+
+                model_turn = await generate_model_turn(user_turn_text, context_snapshot)
+                model_turn_payload = json.dumps(
+                    {
+                        "type": "debate_turn",
+                        "role": "model",
+                        "turnId": f"model-{turn_id}",
+                        "text": model_turn.get("response_text", ""),
+                        "timestamp": timestamp,
+                    }
+                ).encode("utf-8")
+                await ctx.room.local_participant.publish_data(
+                    model_turn_payload, reliable=True, topic="debate"
+                )
+
+                score_update = await evaluate_user_turn(user_turn_text, context_snapshot)
+                scores = score_update.get("scores", {})
+                if isinstance(scores, dict):
+                    debate_score_rows.append(
+                        {
+                            "logicalConsistency": int(scores.get("logicalConsistency", 0)),
+                            "evidenceQuality": int(scores.get("evidenceQuality", 0)),
+                            "rebuttalEffectiveness": int(scores.get("rebuttalEffectiveness", 0)),
+                            "clarityStructure": int(scores.get("clarityStructure", 0)),
+                            "responsiveness": int(scores.get("responsiveness", 0)),
+                        }
+                    )
+
+                score_payload = json.dumps(
+                    {
+                        "type": "debate_score",
+                        "turnId": turn_id,
+                        "scores": score_update.get("scores", {}),
+                        "strongClaims": score_update.get("strongClaims", []),
+                        "weakClaims": score_update.get("weakClaims", []),
+                        "coachingSuggestion": score_update.get("coachingSuggestion", ""),
+                    }
+                ).encode("utf-8")
+                await ctx.room.local_participant.publish_data(
+                    score_payload, reliable=True, topic="debate"
+                )
+
+                final_score = compute_final_score(debate_score_rows)
+                final_payload = json.dumps(
+                    {
+                        "type": "debate_final_score",
+                        **final_score,
+                    }
+                ).encode("utf-8")
+                await ctx.room.local_participant.publish_data(
+                    final_payload, reliable=True, topic="debate"
+                )
+            except asyncio.CancelledError as e:
+                logger.warning(
+                    "[debate] cancellation received version=%s cause=%r — keeping worker alive",
+                    version,
+                    e.__cause__,
+                )
+            except Exception:
+                logger.exception("[debate] failed version=%s", version)
+            finally:
+                debate_queue.task_done()
+
+    def handle_control_message(data_packet):
+        nonlocal app_mode
+
+        if data_packet.topic != "control":
+            return
+
+        try:
+            payload = json.loads(data_packet.data.decode("utf-8"))
+        except Exception:
+            logger.exception("[control] failed to parse control payload")
+            return
+
+        if not isinstance(payload, dict):
+            return
+
+        if payload.get("type") != "app_mode":
+            return
+
+        mode = payload.get("mode")
+        if mode not in ("analysis", "debate"):
+            logger.warning("[control] unsupported mode: %r", mode)
+            return
+
+        if mode == app_mode:
+            return
+
+        app_mode = mode
+        if app_mode == "debate":
+            debate_score_rows.clear()
+        logger.info("[control] switched app mode to %s", app_mode)
+
     fact_check_worker_task = asyncio.create_task(fact_check_worker())
+    debate_worker_task = asyncio.create_task(debate_worker()) if ENABLE_DEBATE_COACH else None
+    ctx.room.on("data_received", handle_control_message)
 
     # Self-test: a checkable false claim so we can see the pipeline light up
     # on dispatch without depending on the user speaking. History is empty
@@ -209,6 +340,9 @@ async def my_agent(ctx: JobContext):
     finally:
         fact_check_worker_task.cancel()
         await asyncio.gather(fact_check_worker_task, return_exceptions=True)
+        if debate_worker_task:
+            debate_worker_task.cancel()
+            await asyncio.gather(debate_worker_task, return_exceptions=True)
 
 
 if __name__ == "__main__":
