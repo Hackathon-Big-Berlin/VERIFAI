@@ -1,5 +1,4 @@
 import asyncio
-import time
 import os
 import json
 import logging
@@ -7,6 +6,9 @@ import dotenv
 from typing import List, Dict, Any
 from tavily import AsyncTavilyClient
 from google import genai
+from google.genai import types
+
+from schemas import CLAIMS_SCHEMA, VERDICT_SCHEMA
 
 dotenv.load_dotenv()
 logger = logging.getLogger("agent")
@@ -33,57 +35,27 @@ def _get_tavily_api_key() -> str:
         raise ValueError("Missing Tavily API key. Set TAVILY_API_KEY.")
     return api_key
 
+# Verdict prompt is now plain — no need to spell out the JSON shape because
+# VERDICT_SCHEMA enforces it via Gemini's response_schema config.
 GEMINI_PROMPT = '''
-You are an expert, highly objective fact-checking AI. Your sole purpose is to evaluate the accuracy of a specific CLAIM based strictly on the provided CONTEXT. The CONTEXT consists of search results, including snippets and their source URLs.
+You are an expert, highly objective fact-checking AI. Evaluate the accuracy of the CLAIM based strictly on the provided CONTEXT (search snippets + source URLs).
 
-You must act as a ruthless evaluator. Do not rely on your internal knowledge. If the context lacks the answer, state that it is unverified.
+Act as a ruthless evaluator. Do not rely on your internal knowledge. If the context lacks the answer, return INCONCLUSIVE.
 
-### Instructions:
-1. Carefully read the CLAIM and the CONTEXT.
-2. Formulate a final verdict based ONLY on the provided evidence.
-3. Identify exactly 1 to 3 source URLs from the CONTEXT that directly support your verdict.
-
-### Output Format:
-You MUST return your response strictly as a valid JSON object. Do not include markdown blocks. The JSON must have exactly these three keys:
-{
-    "verdict": "[TRUE / FALSE / PARTIALLY TRUE / INCONCLUSIVE]",
-    "reasoning": "[A concise, step-by-step explanation citing the context]",
-    "sources": ["[URL_1]", "[URL_2]"] 
-}
+Return a verdict, concise reasoning citing the context, and 1-3 source URLs from the context that support your verdict.
 '''
 
+
 def _get_claims_prompt(text_block: str) -> str:
-    """
-    Helper to dynamically generate the extraction prompt.
-    Strictly enforces exact character-by-character extraction via JSON.
-    """
     return f"""Consider this speech: {text_block}.
 
-Extract the main factual claims made by the speaker. 
+Extract the main factual claims made by the speaker.
 CRITICAL RULES:
-1. You MUST quote the claim exactly as it appears in the speech, character by character. 
+1. Quote each claim exactly as it appears in the speech, character by character.
 2. Do not paraphrase, summarize, or alter a single word or punctuation mark.
 3. Every claim must be a direct, verbatim substring of the provided speech.
-4. Make sure to include all necessary context to the claim. Don't provide a claim without any context that could influence the verdict of the claim. If enough context for a claim isn't provided, don't include it.
-
-Output the claims strictly as a valid JSON array of strings. Do not output anything else.
-Example format:
-[
-  "The global economy is actually projected to grow by 5.2% this year",
-  "domestic oil production has actually increased by 20% since the start of the conflict."
-]
+4. Include enough context for each claim that the verdict isn't ambiguous. If enough context for a claim isn't provided in the speech, don't include it.
 """
-
-def _clean_json_response(text: str) -> str:
-    """Safely strips markdown formatting that LLMs sometimes add to JSON outputs."""
-    text = text.strip()
-    if text.startswith("```json"):
-        text = text[7:]
-    elif text.startswith("```"):
-        text = text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
-    return text.strip()
 
 async def _process_single_claim(claim: str, tavily_client: AsyncTavilyClient, gemini_client: genai.Client) -> Dict[str, Any]:
     """Worker function to process a single claim asynchronously and parse JSON output."""
@@ -106,25 +78,25 @@ async def _process_single_claim(claim: str, tavily_client: AsyncTavilyClient, ge
         search_query = f"Verify the claim: {claim}. Provide supporting and contradicting evidence with dates and sources."
         search_response = await tavily_client.search(search_query, search_depth=SEARCH_DEPTH)
         
-        # 2. Fact Check
+        # 2. Fact Check — schema-enforced, no markdown/JSON cleanup needed.
         final_prompt = f'{GEMINI_PROMPT}\n<CLAIM>{claim}</CLAIM>\n<CONTEXT>{search_response}</CONTEXT>'
-        
+
         response = await gemini_client.aio.models.generate_content(
-            model=GEMINI_MODEL_NAME, 
-            contents=final_prompt
+            model=GEMINI_MODEL_NAME,
+            contents=final_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=VERDICT_SCHEMA,
+            ),
         )
 
-        # Debug visibility: emit Gemini raw fact-check output on every run.
-        raw_fact_check_output = response.text if response and response.text else ""
         logger.debug(
             "[FACT_CHECK][GEMINI_RAW_OUTPUT] claim=%s output=%s",
             claim,
-            raw_fact_check_output,
+            response.text,
         )
-        
-        # 3. Parse and Validate JSON
-        cleaned_text = _clean_json_response(response.text)
-        parsed_response = json.loads(cleaned_text)
+
+        parsed_response = json.loads(response.text)
         
         # Enforce the 1-3 sources rule natively
         extracted_sources = parsed_response.get("sources", [])
@@ -175,35 +147,38 @@ async def run_fact_check_pipeline(text_block: str) -> List[Dict[str, Any]]:
         }]
 
     try:
-        # Step 1: Extract claims as strict JSON (Now correctly yielding to the event loop)
+        # Step 1: Extract claims — schema-enforced as a JSON array of strings.
         prompt = _get_claims_prompt(text_block)
         parsed_data = await gemini_client.aio.models.generate_content(
-            model=GEMINI_MODEL_NAME, contents=prompt
+            model=GEMINI_MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=CLAIMS_SCHEMA,
+            ),
         )
-        
+
         if not parsed_data or not parsed_data.text:
             logger.error("Claim extraction returned empty response")
             return [{
-                "claim": "Extraction", 
-                "status": "error", 
-                "verdict": "ERROR", 
-                "reasoning": "Model returned an empty response during claim extraction.", 
+                "claim": "Extraction",
+                "status": "error",
+                "verdict": "ERROR",
+                "reasoning": "Model returned an empty response during claim extraction.",
                 "sources": []
             }]
 
-        # Clean and parse the JSON array of claims
-        cleaned_extraction = _clean_json_response(parsed_data.text)
         try:
-            claims = json.loads(cleaned_extraction)
+            claims = json.loads(parsed_data.text)
             if not isinstance(claims, list):
                 raise ValueError("Extracted JSON is not a list.")
         except (json.JSONDecodeError, ValueError) as e:
             logger.exception("Failed to parse extracted claims JSON")
             return [{
-                "claim": "Extraction", 
-                "status": "error", 
-                "verdict": "ERROR", 
-                "reasoning": f"Failed to parse extracted claims into JSON array: {str(e)}", 
+                "claim": "Extraction",
+                "status": "error",
+                "verdict": "ERROR",
+                "reasoning": f"Failed to parse extracted claims into JSON array: {str(e)}",
                 "sources": []
             }]
         
