@@ -35,7 +35,7 @@ def configure_logging() -> None:
     logger.debug("logging configured", extra={"level": "DEBUG"})
 
 
-load_dotenv(".env.local")
+load_dotenv()
 
 server = AgentServer()
 
