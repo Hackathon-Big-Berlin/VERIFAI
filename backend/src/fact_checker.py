@@ -47,16 +47,26 @@ If verifiable, generate the optimal Google Search query to verify the claim, res
 """
 
 
-VERDICT_PROMPT = """You are an expert, highly objective fact-checking AI. Evaluate the accuracy of the CLAIM based strictly on the provided SEARCH_RESULTS (snippets + source URLs).
+VERDICT_PROMPT = """You are an expert, highly objective fact-checking AI. Evaluate the accuracy of the CLAIM.
 
-Act as a ruthless evaluator. Do not rely on your internal knowledge. If the search results lack the answer, return INCONCLUSIVE.
+If TRUSTED_CONTEXT is non-empty AND it covers the claim, treat it as authoritative — override SEARCH_RESULTS where they conflict. TRUSTED_CONTEXT contains pre-vetted facts the user has provided about the speaker or domain.
 
-Return a verdict, concise reasoning citing the search results, and 1-3 source URLs that support your verdict.
+If TRUSTED_CONTEXT does not cover the claim (or is empty), evaluate based on SEARCH_RESULTS only. If SEARCH_RESULTS lack the answer, return INCONCLUSIVE.
+
+Do not rely on your internal knowledge. Return a verdict, concise reasoning citing the evidence used, and 1-3 source URLs that support your verdict.
 """
 
 
-async def fact_check_sentence(sentence: str, history: str) -> Dict[str, Any]:
+async def fact_check_sentence(
+    sentence: str,
+    history: str,
+    trusted_context: str = "",
+) -> Dict[str, Any]:
     """Fact-check a single sentence with prior-sentence history for pronoun resolution.
+
+    `trusted_context` is the user-uploaded background facts (one statement per
+    line, already vetted in nuanced mode). When non-empty, the verdict prompt
+    treats it as authoritative — overrides web search for matters it covers.
 
     Always returns a dict with the same shape:
         {claim, status, verdict, reasoning, sources}
@@ -115,6 +125,7 @@ async def fact_check_sentence(sentence: str, history: str) -> Dict[str, Any]:
         # 3. Verdict — schema-enforced JSON output.
         verdict_prompt = (
             f"{VERDICT_PROMPT}\n"
+            f"<TRUSTED_CONTEXT>{trusted_context}</TRUSTED_CONTEXT>\n"
             f"<CLAIM>{sentence}</CLAIM>\n"
             f"<SEARCH_RESULTS>{search_response}</SEARCH_RESULTS>"
         )
