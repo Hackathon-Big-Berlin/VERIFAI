@@ -1,6 +1,9 @@
 import asyncio
 import json
 import logging
+import os
+from datetime import datetime, timezone
+from typing import Literal
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -15,14 +18,15 @@ from livekit.agents import (
 from livekit.plugins import ai_coustics, silero
 
 from buffer import TranscriptBuffer
-from context_loader import context_likely_relevant, parse_context_text
+from debate_coach import generate_debate_reply
 from fact_checker import fact_check_sentence
 
 logger = logging.getLogger("agent")
+ENABLE_DEBATE_COACH = os.getenv("ENABLE_DEBATE_COACH", "1") == "1"
+DEBATE_SILENCE_SECONDS = 7
 
 
 def configure_logging() -> None:
-    # Ensure debug/info logs are visible during local dev runs.
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
@@ -30,78 +34,72 @@ def configure_logging() -> None:
     )
     logger.debug("logging configured", extra={"level": "DEBUG"})
 
+
 load_dotenv(".env.local")
 
 server = AgentServer()
 
+
 @server.rtc_session(agent_name="my-agent")
 async def my_agent(ctx: JobContext):
-    # Logging setup
-    # Add any other context you want in all log entries here
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
 
     session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all available models at https://docs.livekit.io/agents/models/stt/
         stt=inference.STT(model="deepgram/nova-3", language="multi"),
     )
 
-    # Strong refs to in-flight transcript-publish tasks so they aren't GC'd
-    # mid-await (ruff RUF006).
     pending_publishes: set[asyncio.Task] = set()
-    # Sentence buffer that emits complete sentences (with recent-sentence
-    # history for pronoun resolution) as STT finals arrive.
+
+    app_mode: Literal["analysis", "debate"] = "analysis"
+
     transcript_buffer = TranscriptBuffer()
     sentence_version = 0
-    # Queue items: (version, sentence, history). One sentence per fact-check.
     fact_check_queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
-    # User-uploaded trusted context (gospel/nuanced). Mutated by the
-    # data_received handler when the frontend sends a "context" payload.
-    # Wrapped in a dict so the worker closure picks up live updates.
-    context_state: dict[str, str] = {"text": ""}
-    # Dedup key = normalized claim (lowercased, stripped of punctuation/space).
-    # Maps to the last verdict we published for that claim; we only re-publish
-    # when the verdict changes, and the frontend replaces the existing card.
-    # Matches the frontend's normalizeClaim() exactly.
     published_verdicts: dict[str, str] = {}
+
+    debate_topic: str | None = None
+    debate_history: list[dict[str, str]] = []
+    debate_pending_finals: list[str] = []
+    debate_turn_counter = 0
+    debate_response_lock = asyncio.Lock()
+    debate_silence_task: asyncio.Task | None = None
 
     def normalize_claim(text: str) -> str:
         return text.lower().strip(" \t\r\n.,!?;:'\"`-")
 
-    # Run the pipeline on each completed sentence and publish successful,
-    # novel verdicts to the data channel as topic="flag".
     async def fact_check_worker():
         while True:
             version, sentence, history = await fact_check_queue.get()
             try:
-                trusted_context = context_state["text"]
                 logger.info(
-                    "[worker] received version=%s sentence=%r history_len=%s trusted_len=%s",
+                    "[worker] received version=%s sentence=%r history_len=%s",
                     version,
                     sentence[:120],
                     len(history),
-                    len(trusted_context),
                 )
-                result = await fact_check_sentence(sentence, history, trusted_context)
+                result = await fact_check_sentence(sentence, history)
                 logger.info(
                     "[worker] result version=%s status=%s verdict=%s",
                     version,
                     result.get("status"),
                     result.get("verdict"),
                 )
-                logger.debug("[worker] full result version=%s: %s", version, json.dumps(result))
+                logger.debug(
+                    "[worker] full result version=%s: %s", version, json.dumps(result)
+                )
 
                 if result.get("status") != "success":
                     continue
+
                 claim = result.get("claim", "")
                 verdict = result.get("verdict", "")
                 norm = normalize_claim(claim)
                 if not norm:
                     continue
                 if published_verdicts.get(norm) == verdict:
-                    continue  # same claim, same verdict — already shown
+                    continue
                 published_verdicts[norm] = verdict
 
                 flag_payload = json.dumps(
@@ -111,28 +109,18 @@ async def my_agent(ctx: JobContext):
                         "verdict": verdict,
                         "reasoning": result.get("reasoning", ""),
                         "sources": result.get("sources", []),
-                        "used_trusted_context": context_likely_relevant(claim, trusted_context),
                     }
                 ).encode("utf-8")
 
-                try:
-                    await ctx.room.local_participant.publish_data(
-                        flag_payload, reliable=True, topic="flag"
-                    )
-                    logger.info(
-                        "[worker] published flag verdict=%s claim=%r",
-                        verdict,
-                        claim[:80],
-                    )
-                except Exception:
-                    logger.exception(
-                        "[worker] failed to publish flag claim=%r",
-                        claim[:80],
-                    )
+                await ctx.room.local_participant.publish_data(
+                    flag_payload, reliable=True, topic="flag"
+                )
+                logger.info(
+                    "[worker] published flag verdict=%s claim=%r",
+                    verdict,
+                    claim[:80],
+                )
             except asyncio.CancelledError as e:
-                # Diagnostic: a single bad Gemini call shouldn't kill the
-                # worker forever. Log the underlying cause and keep looping
-                # so subsequent queue items still get processed.
                 logger.warning(
                     "[worker] cancellation received version=%s cause=%r — keeping worker alive",
                     version,
@@ -143,20 +131,145 @@ async def my_agent(ctx: JobContext):
             finally:
                 fact_check_queue.task_done()
 
-    fact_check_worker_task = asyncio.create_task(fact_check_worker())
+    async def publish_debate_turn(role: Literal["user", "model"], text: str):
+        nonlocal debate_turn_counter
 
-    # Self-test: a checkable false claim so we can see the pipeline light up
-    # on dispatch without depending on the user speaking. History is empty
-    # because there's no prior context.
+        debate_turn_counter += 1
+        turn_id = f"{role}-{debate_turn_counter}"
+        timestamp = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(
+            {
+                "type": "debate_turn",
+                "role": role,
+                "turnId": turn_id,
+                "text": text,
+                "timestamp": timestamp,
+            }
+        ).encode("utf-8")
+
+        await ctx.room.local_participant.publish_data(payload, reliable=True, topic="debate")
+
+    async def maybe_respond_to_debate_turn():
+        nonlocal debate_topic
+
+        if app_mode != "debate" or not debate_pending_finals:
+            return
+        if debate_response_lock.locked():
+            return
+
+        async with debate_response_lock:
+            if app_mode != "debate" or not debate_pending_finals:
+                return
+
+            user_turn_text = " ".join(debate_pending_finals).strip()
+            debate_pending_finals.clear()
+            if not user_turn_text:
+                return
+
+            if debate_topic is None:
+                # The user's first complete turn defines the debate topic.
+                debate_topic = user_turn_text
+
+            debate_history.append({"role": "user", "text": user_turn_text})
+            debate_history[:] = debate_history[-12:]
+
+            try:
+                await publish_debate_turn("user", user_turn_text)
+            except Exception:
+                logger.exception("[debate] failed publishing user turn")
+                return
+
+            try:
+                model_text = await generate_debate_reply(
+                    topic=debate_topic,
+                    conversation=debate_history,
+                    latest_user_turn=user_turn_text,
+                )
+            except Exception:
+                logger.exception("[debate] failed generating model response")
+                return
+
+            if not model_text:
+                return
+
+            debate_history.append({"role": "model", "text": model_text})
+            debate_history[:] = debate_history[-12:]
+
+            try:
+                await publish_debate_turn("model", model_text)
+            except Exception:
+                logger.exception("[debate] failed publishing model turn")
+
+    def schedule_debate_silence_timer():
+        nonlocal debate_silence_task
+
+        if not ENABLE_DEBATE_COACH or app_mode != "debate":
+            return
+
+        if debate_silence_task and not debate_silence_task.done():
+            debate_silence_task.cancel()
+
+        async def _wait_for_silence_and_respond():
+            try:
+                await asyncio.sleep(DEBATE_SILENCE_SECONDS)
+                await maybe_respond_to_debate_turn()
+            except asyncio.CancelledError:
+                return
+
+        debate_silence_task = asyncio.create_task(_wait_for_silence_and_respond())
+
+    def handle_control_message(data_packet):
+        nonlocal app_mode, debate_topic, debate_turn_counter
+
+        if data_packet.topic != "control":
+            return
+
+        try:
+            payload = json.loads(data_packet.data.decode("utf-8"))
+        except Exception:
+            logger.exception("[control] failed to parse control payload")
+            return
+
+        if not isinstance(payload, dict):
+            return
+        if payload.get("type") != "app_mode":
+            return
+
+        mode = payload.get("mode")
+        if mode not in ("analysis", "debate"):
+            logger.warning("[control] unsupported mode: %r", mode)
+            return
+        if mode == app_mode:
+            return
+
+        app_mode = mode
+        if app_mode == "analysis":
+            debate_pending_finals.clear()
+            if debate_silence_task and not debate_silence_task.done():
+                debate_silence_task.cancel()
+        else:
+            debate_topic = None
+            debate_history.clear()
+            debate_pending_finals.clear()
+            debate_turn_counter = 0
+
+        logger.info("[control] switched app mode to %s", app_mode)
+
+    fact_check_worker_task = asyncio.create_task(fact_check_worker())
+    ctx.room.on("data_received", handle_control_message)
+
     fact_check_queue.put_nowait((-1, "The capital of France is Berlin.", ""))
 
     def forward_transcript_to_data_channel(event):
         nonlocal sentence_version
 
+        if event.transcript and event.transcript.strip() and app_mode == "debate":
+            if event.is_final:
+                debate_pending_finals.append(event.transcript.strip())
+            # Any new transcript activity (interim or final) resets silence timer.
+            schedule_debate_silence_timer()
+
         if event.is_final and event.transcript and event.transcript.strip():
-            # Feed the buffer; it returns any complete sentences with their
-            # recent-sentence history. Often zero (chunk didn't end with .!?)
-            # or one; occasionally more if the chunk contains multiple sentences.
             for sentence, history in transcript_buffer.process_chunk(event.transcript):
                 sentence_version += 1
                 fact_check_queue.put_nowait((sentence_version, sentence, history))
@@ -167,8 +280,6 @@ async def my_agent(ctx: JobContext):
                     len(history),
                 )
 
-        # session.on(...) callbacks are sync, but publish_data is async.
-        # Schedule the publish on the running event loop so we don't block.
         payload = json.dumps(
             {
                 "type": "transcript",
@@ -193,136 +304,17 @@ async def my_agent(ctx: JobContext):
 
     session.on("user_input_transcribed", forward_transcript_to_data_channel)
 
-    async def publish_context_status(phase: str, kept: int = 0, total: int = 0, error: str | None = None) -> None:
-        payload: dict = {"type": "context_status", "phase": phase, "kept": kept, "total": total}
-        if error:
-            payload["error"] = error
-        try:
-            await ctx.room.local_participant.publish_data(
-                json.dumps(payload).encode("utf-8"),
-                reliable=True,
-                topic="context_status",
-            )
-            logger.info("[context] status -> %s kept=%s total=%s", phase, kept, total)
-        except Exception:
-            logger.exception("[context] failed to publish status")
-
-    async def handle_context_upload(mode: str, statements: list[str]) -> None:
-        if mode == "gospel":
-            context_state["text"] = "\n".join(statements)
-            logger.info("[context] gospel mode: %s statements stored", len(statements))
-            await publish_context_status("ready", kept=len(statements), total=len(statements))
-            return
-
-        # Nuanced: run each statement through the pipeline standalone, in
-        # parallel, and keep everything except FALSE verdicts (and crashes).
-        total = len(statements)
-        await publish_context_status("vetting", kept=0, total=total)
-
-        survivors: list[str] = []
-        # `as_completed` lets us push progress as each fact-check finishes,
-        # rather than waiting for the slowest one.
-        coros = [fact_check_sentence(stmt, "", "") for stmt in statements]
-        for fut in asyncio.as_completed(coros):
-            try:
-                result = await fut
-            except Exception:
-                logger.exception("[context] vetting task crashed")
-                await publish_context_status("vetting", kept=len(survivors), total=total)
-                continue
-
-            status = result.get("status")
-            verdict = result.get("verdict")
-            original = result.get("claim", "")
-
-            if status == "success" and verdict == "FALSE":
-                logger.info("[context] vetting filtered FALSE: %s", original[:80])
-            elif status == "error":
-                logger.warning("[context] vetting error for: %s", original[:80])
-            else:
-                # Keep TRUE, PARTIALLY TRUE, INCONCLUSIVE, and skipped.
-                survivors.append(original)
-
-            await publish_context_status("vetting", kept=len(survivors), total=total)
-
-        context_state["text"] = "\n".join(survivors)
-        logger.info(
-            "[context] nuanced vetting complete: %s/%s survived",
-            len(survivors),
-            total,
-        )
-        await publish_context_status("ready", kept=len(survivors), total=total)
-
-    def on_data_received(packet) -> None:
-        if packet.topic != "context":
-            return
-        try:
-            payload = json.loads(packet.data.decode("utf-8"))
-        except Exception:
-            logger.exception("[context] failed to parse incoming payload")
-            return
-        if payload.get("type") != "context":
-            return
-        mode = payload.get("mode")
-        statements_field = payload.get("statements")
-        if mode not in ("gospel", "nuanced") or not isinstance(statements_field, list):
-            logger.warning("[context] invalid payload shape: %r", payload)
-            return
-        # Tolerate either a list of strings or a raw text blob via "text".
-        statements = [s.strip() for s in statements_field if isinstance(s, str) and s.strip()]
-        if not statements and isinstance(payload.get("text"), str):
-            statements = parse_context_text(payload["text"])
-        if not statements:
-            logger.warning("[context] upload had no usable statements")
-            return
-        # Schedule the async handler; data_received callback is sync.
-        task = asyncio.create_task(handle_context_upload(mode, statements))
-        pending_publishes.add(task)
-        task.add_done_callback(pending_publishes.discard)
-
     try:
-        # Join the room before starting the voice pipeline so the agent can receive
-        # browser microphone audio and publish transcript events back to the frontend.
         await ctx.connect()
-        # Subscribe to data-channel messages from the participant — used for
-        # user-uploaded trusted context.
-        ctx.room.on("data_received", on_data_received)
 
         await session.start(
             agent=Agent(instructions="Transcribe user speech. Do not respond."),
             room=ctx.room,
             room_options=room_io.RoomOptions(
-                # Tear down the room when the user disconnects so the next
-                # Connect creates a fresh room and re-triggers agent dispatch
-                # (rooms otherwise linger ~5min on LiveKit Cloud and reconnecting
-                # joins the existing room without dispatching the agent).
                 delete_room_on_close=True,
                 audio_input=room_io.AudioInputOptions(
                     noise_cancellation=ai_coustics.audio_enhancement(
-                        # QUAIL_VF_L  → best for single foreground speaker (our case)
-                        # QUAIL_L     → better if you ever need multi-speaker / diarization
-                        model=ai_coustics.EnhancerModel.QUAIL_VF_L,
-
-                        # enhancement_level controls suppression aggressiveness:
-                        #   0.5 = conservative — always preserves foreground speech, minimal artifacts
-                        #   0.8 = balanced    — optimal WER on challenging real-world data (recommended)
-                        #   1.0 = aggressive  — maximum suppression, risk of over-filtering quiet speech
-                        model_parameters=ai_coustics.ModelParameters(enhancement_level=0.8),
-
-                        # VAD settings tune how the model detects speech boundaries.
-                        vad_settings=ai_coustics.VadSettings(
-                            # How long (seconds) to keep VAD "on" after speech ends — prevents clipping
-                            # Range: 0.0–1.0s  |  Lower = tighter turn-taking, Higher = less cutoff
-                            speech_hold_duration=0.03,
-
-                            # How sensitive VAD is to speech vs noise
-                            # Range: 1.0–15.0  |  Higher = more sensitive (catches whispers, but more false triggers)
-                            sensitivity=6.0,
-
-                            # Minimum duration (seconds) before a segment is treated as speech
-                            # Range: 0.0–1.0s  |  Raise this to filter out very short utterances/clicks
-                            minimum_speech_duration=0.0,
-                        ),
+                        model=ai_coustics.EnhancerModel.QUAIL_VF_L
                     ),
                 ),
             ),
@@ -330,6 +322,9 @@ async def my_agent(ctx: JobContext):
     finally:
         fact_check_worker_task.cancel()
         await asyncio.gather(fact_check_worker_task, return_exceptions=True)
+        if debate_silence_task and not debate_silence_task.done():
+            debate_silence_task.cancel()
+            await asyncio.gather(debate_silence_task, return_exceptions=True)
 
 
 if __name__ == "__main__":
