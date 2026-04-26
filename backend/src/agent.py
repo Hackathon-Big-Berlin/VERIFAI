@@ -32,6 +32,47 @@ def configure_logging() -> None:
 
 load_dotenv(".env.local")
 
+def get_room_options(adaptation_mode: str) -> room_io.RoomOptions:
+    """
+    Generates the ai-coustics audio configuration based on the requested adaptation mode.
+    Defaults to 'focus' if an unknown mode is provided.
+    """
+    # Baseline: Noisy outdoor environment (Focus Mode)
+    model = ai_coustics.EnhancerModel.QUAIL_VF_L
+    enhancement_level = 0.65
+    speech_hold_duration = 0.05
+    sensitivity = 5.0
+    minimum_speech_duration = 0.03
+
+    if adaptation_mode == "multispeaker":
+        # Multi-speaker outdoor (Debate)
+        model = ai_coustics.EnhancerModel.QUAIL_L
+        enhancement_level = 0.65
+        
+    elif adaptation_mode == "studio":
+        # Quiet indoor (Studio)
+        model = ai_coustics.EnhancerModel.QUAIL_L
+        enhancement_level = 0.5
+        sensitivity = 6.0  # More sensitive to catch soft natural speech
+        
+    logger.info("[adaptation] ⚙️ Building config for mode: %s (model=%s, enhancement=%s)", 
+                adaptation_mode, model.name, enhancement_level)
+
+    return room_io.RoomOptions(
+        delete_room_on_close=True,
+        audio_input=room_io.AudioInputOptions(
+            noise_cancellation=ai_coustics.audio_enhancement(
+                model=model,
+                model_parameters=ai_coustics.ModelParameters(enhancement_level=enhancement_level),
+                vad_settings=ai_coustics.VadSettings(
+                    speech_hold_duration=speech_hold_duration,
+                    sensitivity=sensitivity,
+                    minimum_speech_duration=minimum_speech_duration,
+                ),
+            ),
+        ),
+    )
+
 server = AgentServer()
 
 @server.rtc_session(agent_name="my-agent")
@@ -42,11 +83,9 @@ async def my_agent(ctx: JobContext):
         "room": ctx.room.name,
     }
 
-    session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all available models at https://docs.livekit.io/agents/models/stt/
-        stt=inference.STT(model="deepgram/nova-3", language="multi"),
-    )
+    # Asynchronous state management for adaptation modes
+    current_adaptation_mode = "focus"
+    mode_changed_event = asyncio.Event()
 
     # Strong refs to in-flight transcript-publish tasks so they aren't GC'd
     # mid-await (ruff RUF006).
@@ -191,8 +230,8 @@ async def my_agent(ctx: JobContext):
         pending_publishes.add(task)
         task.add_done_callback(pending_publishes.discard)
 
-    session.on("user_input_transcribed", forward_transcript_to_data_channel)
 
+    # Helper functions moved up so they can be referenced by the event loop.
     async def publish_context_status(phase: str, kept: int = 0, total: int = 0, error: str | None = None) -> None:
         payload: dict = {"type": "context_status", "phase": phase, "kept": kept, "total": total}
         if error:
@@ -254,31 +293,48 @@ async def my_agent(ctx: JobContext):
         await publish_context_status("ready", kept=len(survivors), total=total)
 
     def on_data_received(packet) -> None:
-        if packet.topic != "context":
-            return
+        nonlocal current_adaptation_mode 
+
+        # 1. Decode the packet first so we can route based on the JSON payload
         try:
             payload = json.loads(packet.data.decode("utf-8"))
         except Exception:
-            logger.exception("[context] failed to parse incoming payload")
+            if packet.topic == "context":
+                logger.exception("[context] failed to parse incoming payload")
             return
-        if payload.get("type") != "context":
+
+        # 2. Handle audio adaptation mode switch
+        if "adaptation" in payload:
+            new_mode = payload.get("adaptation")
+            logger.info("[adaptation] 🔄 Received adaptation mode switch request: %s", new_mode)
+            
+            # Trigger the restart loop if the mode is actually different
+            if new_mode and new_mode != current_adaptation_mode:
+                current_adaptation_mode = new_mode
+                logger.info("[adaptation] ⚡ Signaling session restart...")
+                mode_changed_event.set()
             return
-        mode = payload.get("mode")
-        statements_field = payload.get("statements")
-        if mode not in ("gospel", "nuanced") or not isinstance(statements_field, list):
-            logger.warning("[context] invalid payload shape: %r", payload)
-            return
-        # Tolerate either a list of strings or a raw text blob via "text".
-        statements = [s.strip() for s in statements_field if isinstance(s, str) and s.strip()]
-        if not statements and isinstance(payload.get("text"), str):
-            statements = parse_context_text(payload["text"])
-        if not statements:
-            logger.warning("[context] upload had no usable statements")
-            return
-        # Schedule the async handler; data_received callback is sync.
-        task = asyncio.create_task(handle_context_upload(mode, statements))
-        pending_publishes.add(task)
-        task.add_done_callback(pending_publishes.discard)
+
+        # [DELETED]: Redundant JSON parsing logic that was causing crashes.
+        if packet.topic == "context":
+            if payload.get("type") != "context":
+                return
+            mode = payload.get("mode")
+            statements_field = payload.get("statements")
+            if mode not in ("gospel", "nuanced") or not isinstance(statements_field, list):
+                logger.warning("[context] invalid payload shape: %r", payload)
+                return
+            # Tolerate either a list of strings or a raw text blob via "text".
+            statements = [s.strip() for s in statements_field if isinstance(s, str) and s.strip()]
+            if not statements and isinstance(payload.get("text"), str):
+                statements = parse_context_text(payload["text"])
+            if not statements:
+                logger.warning("[context] upload had no usable statements")
+                return
+            # Schedule the async handler; data_received callback is sync.
+            task = asyncio.create_task(handle_context_upload(mode, statements))
+            pending_publishes.add(task)
+            task.add_done_callback(pending_publishes.discard)
 
     try:
         # Join the room before starting the voice pipeline so the agent can receive
@@ -288,46 +344,39 @@ async def my_agent(ctx: JobContext):
         # user-uploaded trusted context.
         ctx.room.on("data_received", on_data_received)
 
-        await session.start(
-            agent=Agent(instructions="Transcribe user speech. Do not respond."),
-            room=ctx.room,
-            room_options=room_io.RoomOptions(
-                # Tear down the room when the user disconnects so the next
-                # Connect creates a fresh room and re-triggers agent dispatch
-                # (rooms otherwise linger ~5min on LiveKit Cloud and reconnecting
-                # joins the existing room without dispatching the agent).
-                delete_room_on_close=True,
-                audio_input=room_io.AudioInputOptions(
-                    noise_cancellation=ai_coustics.audio_enhancement(
-                        # QUAIL_VF_L  → best for single foreground speaker (our case)
-                        # QUAIL_L     → better if you ever need multi-speaker / diarization
-                        model=ai_coustics.EnhancerModel.QUAIL_VF_L,
+        # [NEW] The Session Restart Loop
+        while True:
+            mode_changed_event.clear()
+            logger.info("[adaptation] 🚀 Initializing session for mode: %s", current_adaptation_mode)
 
-                        # enhancement_level controls suppression aggressiveness:
-                        #   0.5 = conservative — always preserves foreground speech, minimal artifacts
-                        #   0.8 = balanced    — optimal WER on challenging real-world data (recommended)
-                        #   1.0 = aggressive  — maximum suppression, risk of over-filtering quiet speech
-                        model_parameters=ai_coustics.ModelParameters(enhancement_level=0.8),
+            session = AgentSession(
+                stt=inference.STT(model="deepgram/nova-3", language="multi"),
+            )
+            session.on("user_input_transcribed", forward_transcript_to_data_channel)
 
-                        # VAD settings tune how the model detects speech boundaries.
-                        vad_settings=ai_coustics.VadSettings(
-                            # How long (seconds) to keep VAD "on" after speech ends — prevents clipping
-                            # Range: 0.0–1.0s  |  Lower = tighter turn-taking, Higher = less cutoff
-                            speech_hold_duration=0.03,
+            options = get_room_options(current_adaptation_mode)
 
-                            # How sensitive VAD is to speech vs noise
-                            # Range: 1.0–15.0  |  Higher = more sensitive (catches whispers, but more false triggers)
-                            sensitivity=6.0,
+            await session.start(
+                agent=Agent(instructions="Transcribe user speech. Do not respond."),
+                room=ctx.room,
+                room_options=options,
+            )
+            
+            await mode_changed_event.wait()
+            
+            logger.info("[adaptation] 🛑 Mode change requested. Tearing down current session...")
+            
+            if hasattr(session, 'aclose'):
+                await session.aclose()
+            elif hasattr(session, 'shutdown'):
+                await session.shutdown()
 
-                            # Minimum duration (seconds) before a segment is treated as speech
-                            # Range: 0.0–1.0s  |  Raise this to filter out very short utterances/clicks
-                            minimum_speech_duration=0.0,
-                        ),
-                    ),
-                ),
-            ),
-        )
+    except asyncio.CancelledError:
+        logger.info("Agent session cancelled normally.")
+    except Exception:
+        logger.exception("Agent session failed")
     finally:
+        # [MODIFIED]: Consolidated the fact_check_worker cancellation into the primary teardown block.
         fact_check_worker_task.cancel()
         await asyncio.gather(fact_check_worker_task, return_exceptions=True)
 
