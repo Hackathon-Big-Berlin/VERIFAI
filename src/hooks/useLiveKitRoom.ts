@@ -43,6 +43,7 @@ type DataChannelMessage =
   | Record<string, unknown>;
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
+type AppMode = "analysis" | "debate";
 
 function formatTimestamp(date: Date): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -67,8 +68,9 @@ const LIVEKIT_TOKEN = import.meta.env.VITE_LIVEKIT_TOKEN as string | undefined;
 // Connect to a LiveKit room, publish the mic, and accumulate every Data Channel
 // transcript event into the *current* session block. Each Connect→Disconnect
 // cycle gets its own block; older blocks are preserved so the UI can stack them.
-export function useLiveKitRoom() {
+export function useLiveKitRoom(mode: AppMode = "analysis") {
   const roomRef = useRef<Room | null>(null);
+  const modeRef = useRef<AppMode>(mode);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<TranscriptSession[]>([]);
@@ -76,6 +78,40 @@ export function useLiveKitRoom() {
   const [debateTurns, setDebateTurns] = useState<DebateTurn[]>([]);
   const [debateScores, setDebateScores] = useState<DebateTurnScore[]>([]);
   const [debateFinalScore, setDebateFinalScore] = useState<DebateFinalScore | null>(null);
+
+  const publishAppMode = useCallback(async (nextMode: AppMode) => {
+    const room = roomRef.current;
+    if (!room) return;
+
+    const payload = new TextEncoder().encode(
+      JSON.stringify({ type: "app_mode", mode: nextMode }),
+    );
+
+    try {
+      await room.localParticipant.publishData(payload, {
+        reliable: true,
+        topic: "control",
+      });
+      console.log("[livekit control] app mode published", nextMode);
+    } catch (err) {
+      console.warn("[livekit control] failed to publish app mode", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    modeRef.current = mode;
+    if (mode === "analysis") {
+      setDebateTurns([]);
+      setDebateScores([]);
+      setDebateFinalScore(null);
+      return;
+    }
+    setFlags([]);
+  }, [mode]);
+
+  useEffect(() => {
+    void publishAppMode(mode);
+  }, [mode, publishAppMode]);
 
   // Establish the underlying LiveKit room connection once and keep it open
   // for the page lifetime. This avoids the dispatch cold-start delay every
@@ -169,6 +205,7 @@ export function useLiveKitRoom() {
           message.type === "flag" &&
           typeof (message as { claim?: unknown }).claim === "string"
         ) {
+          if (modeRef.current !== "analysis") return;
           const flagMessage = message as FactCheckFlag;
           setFlags((prev) => {
             const incoming = normalizeClaim(flagMessage.claim);
@@ -192,6 +229,7 @@ export function useLiveKitRoom() {
           typeof (message as { turnId?: unknown }).turnId === "string" &&
           typeof (message as { text?: unknown }).text === "string"
         ) {
+          if (modeRef.current !== "debate") return;
           const debateTurn = message as {
             type: "debate_turn";
             role: "user" | "model";
@@ -221,6 +259,7 @@ export function useLiveKitRoom() {
           message.type === "debate_score" &&
           typeof (message as { turnId?: unknown }).turnId === "string"
         ) {
+          if (modeRef.current !== "debate") return;
           const scoreUpdate = message as DebateTurnScore & { type: "debate_score" };
           setDebateScores((prev) => {
             const idx = prev.findIndex((item) => item.turnId === scoreUpdate.turnId);
@@ -241,6 +280,7 @@ export function useLiveKitRoom() {
           message.type === "debate_final_score" &&
           typeof (message as { overall?: unknown }).overall === "number"
         ) {
+          if (modeRef.current !== "debate") return;
           setDebateFinalScore(message as DebateFinalScore);
           return;
         }
@@ -319,6 +359,7 @@ export function useLiveKitRoom() {
           pendingText: "",
         },
       ]);
+      await publishAppMode(modeRef.current);
       setStatus("connected");
       console.log("[livekit] connect flow completed");
     } catch (err) {
@@ -327,7 +368,7 @@ export function useLiveKitRoom() {
       setError(msg);
       setStatus("error");
     }
-  }, [ensureRoomConnected]);
+  }, [ensureRoomConnected, publishAppMode]);
 
   // Fully leave the room so the agent's close_on_disconnect fires and the
   // backend's delete_room_on_close=True tears the room down. That lets the
