@@ -74,7 +74,17 @@ export function FactCheckCard({ flag }: FactCheckCardProps) {
   return (
     <article className={cn("rounded-md border p-4 text-card-foreground shadow-sm transition-colors", styles.card)}>
       <div className="mb-3 flex items-start justify-between gap-3">
-        <Badge className={styles.badge}>{verdictLabel[verdict] ?? verdict}</Badge>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge className={styles.badge}>{verdictLabel[verdict] ?? verdict}</Badge>
+          {flag.used_trusted_context && (
+            <span
+              className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
+              title="This verdict was likely informed by your uploaded context."
+            >
+              from context
+            </span>
+          )}
+        </div>
         <span className="font-mono text-xs uppercase tracking-normal text-muted-foreground">{flag.type}</span>
       </div>
       <blockquote className={cn("border-l-2 pl-3 text-sm font-medium leading-6 text-foreground", styles.quote)}>
