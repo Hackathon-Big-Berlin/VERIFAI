@@ -147,21 +147,27 @@ async def my_agent(ctx: JobContext):
             finally:
                 fact_check_queue.task_done()
 
-    async def publish_debate_turn(role: Literal["user", "model"], text: str):
+    async def publish_debate_turn(
+        role: Literal["user", "model"],
+        text: str,
+        sources: list[str] | None = None,
+    ):
         nonlocal debate_turn_counter
 
         debate_turn_counter += 1
         turn_id = f"{role}-{debate_turn_counter}"
         timestamp = datetime.now(timezone.utc).isoformat()
-        payload = json.dumps(
-            {
-                "type": "debate_turn",
-                "role": role,
-                "turnId": turn_id,
-                "text": text,
-                "timestamp": timestamp,
-            }
-        ).encode("utf-8")
+        payload_data: dict[str, object] = {
+            "type": "debate_turn",
+            "role": role,
+            "turnId": turn_id,
+            "text": text,
+            "timestamp": timestamp,
+        }
+        if sources:
+            payload_data["sources"] = sources
+
+        payload = json.dumps(payload_data).encode("utf-8")
 
         await ctx.room.local_participant.publish_data(payload, reliable=True, topic="debate")
 
@@ -207,7 +213,7 @@ async def my_agent(ctx: JobContext):
                 return
 
             try:
-                model_text = await generate_debate_reply(
+                model_reply = await generate_debate_reply(
                     topic=debate_topic,
                     conversation=debate_history,
                     latest_user_turn=user_turn_text,
@@ -216,6 +222,14 @@ async def my_agent(ctx: JobContext):
                 logger.exception("[debate] failed generating model response")
                 return
 
+            model_text = str(model_reply.get("response_text", "")).strip()
+            model_sources_raw = model_reply.get("sources", [])
+            model_sources = (
+                [str(url).strip() for url in model_sources_raw if str(url).strip()]
+                if isinstance(model_sources_raw, list)
+                else []
+            )
+
             if not model_text:
                 return
 
@@ -223,7 +237,7 @@ async def my_agent(ctx: JobContext):
             debate_history[:] = debate_history[-12:]
 
             try:
-                await publish_debate_turn("model", model_text)
+                await publish_debate_turn("model", model_text, sources=model_sources)
             except Exception:
                 logger.exception("[debate] failed publishing model turn")
 

@@ -4,10 +4,14 @@ import os
 from typing import Any, Dict, List
 
 from google import genai
+from google.genai import types
+from tavily import AsyncTavilyClient
 
 logger = logging.getLogger("agent")
 
 GEMINI_MODEL_NAME = "gemini-3.1-flash-lite-preview"
+SEARCH_DEPTH = "advanced"
+MAX_TAVILY_RESULTS = 5
 
 DEBATE_RESPONSE_PROMPT = """
 You are a debate opponent. Respond to the USER turn with a concise spoken-style rebuttal.
@@ -61,18 +65,44 @@ Debate style requirements:
 3. Address the user's latest argument directly before introducing new points.
 4. Avoid insults, mockery, or dismissive language.
 5. Keep each response concise and spoken-friendly (about 4-8 sentences).
+6. Ground factual claims in WEB_EVIDENCE when available.
+7. If the user asks for sources or evidence, explicitly list URL citations.
 
 Context rules:
 1. The debate topic is fixed to <TOPIC>.
 2. Stay on this topic at all times.
 3. Use the recent conversation turns in <CONVERSATION>.
+4. Treat WEB_EVIDENCE as your primary factual grounding source.
 
 Output rules:
 Return valid JSON only with exactly this shape:
 {
-    "response_text": "..."
+    "response_text": "...",
+    "sources": ["https://...", "https://..."]
 }
 """
+
+DEBATE_RESEARCH_QUERY_PROMPT = """
+You create a single high-quality web-search query for debate research.
+
+Rules:
+1. Focus on claims that matter for the latest user argument.
+2. Prefer concrete terms (names, dates, places, measurable outcomes).
+3. Keep query concise and specific.
+
+Return valid JSON only:
+{
+  "search_query": "..."
+}
+"""
+
+DEBATE_RESEARCH_QUERY_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "search_query": {"type": "STRING"},
+    },
+    "required": ["search_query"],
+}
 
 
 def _get_gemini_api_key() -> str:
@@ -81,6 +111,13 @@ def _get_gemini_api_key() -> str:
         raise ValueError(
             "Missing Gemini API key. Set GOOGLE_API_KEY (preferred) or GEMINI_API_KEY."
         )
+    return api_key
+
+
+def _get_tavily_api_key() -> str:
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        raise ValueError("Missing Tavily API key. Set TAVILY_API_KEY.")
     return api_key
 
 
@@ -103,11 +140,69 @@ def _clamp_score(value: Any) -> int:
         return 0
 
 
-async def generate_debate_reply(
+def _extract_sources(search_response: Dict[str, Any]) -> List[str]:
+    urls: List[str] = []
+    for item in search_response.get("results", [])[:MAX_TAVILY_RESULTS]:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url", "")).strip()
+        if url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _format_search_context(search_response: Dict[str, Any]) -> str:
+    lines: List[str] = []
+    for i, item in enumerate(search_response.get("results", [])[:MAX_TAVILY_RESULTS], start=1):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "")).strip() or "Untitled"
+        url = str(item.get("url", "")).strip()
+        snippet = str(item.get("content", "")).strip().replace("\n", " ")
+        if len(snippet) > 600:
+            snippet = f"{snippet[:600]}..."
+        lines.append(f"[{i}] {title}\nURL: {url}\nSnippet: {snippet}")
+    return "\n\n".join(lines)
+
+
+async def _build_research_query(
     topic: str,
     conversation: List[Dict[str, str]],
     latest_user_turn: str,
 ) -> str:
+    client = genai.Client(api_key=_get_gemini_api_key())
+    conversation_lines: List[str] = []
+    for turn in conversation[-8:]:
+        role = str(turn.get("role", "user")).upper()
+        text = str(turn.get("text", "")).strip()
+        if text:
+            conversation_lines.append(f"{role}: {text}")
+
+    prompt = (
+        f"{DEBATE_RESEARCH_QUERY_PROMPT}\n"
+        f"<TOPIC>{topic}</TOPIC>\n"
+        f"<LATEST_USER_TURN>{latest_user_turn}</LATEST_USER_TURN>\n"
+        f"<CONVERSATION>{'\\n'.join(conversation_lines)}</CONVERSATION>"
+    )
+
+    response = await client.aio.models.generate_content(
+        model=GEMINI_MODEL_NAME,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=DEBATE_RESEARCH_QUERY_SCHEMA,
+        ),
+    )
+    data = json.loads(response.text)
+    query = str(data.get("search_query", "")).strip()
+    return query or f"{topic} {latest_user_turn}".strip()
+
+
+async def generate_debate_reply(
+    topic: str,
+    conversation: List[Dict[str, str]],
+    latest_user_turn: str,
+) -> Dict[str, Any]:
     """Generate the next debate response for chat-like turn taking."""
     client = genai.Client(api_key=_get_gemini_api_key())
     conversation_lines = []
@@ -117,11 +212,26 @@ async def generate_debate_reply(
         if text:
             conversation_lines.append(f"{role}: {text}")
 
+    search_query = ""
+    search_context = ""
+    sources: List[str] = []
+
+    try:
+        search_query = await _build_research_query(topic, conversation, latest_user_turn)
+        tavily_client = AsyncTavilyClient(api_key=_get_tavily_api_key())
+        search_response = await tavily_client.search(search_query, search_depth=SEARCH_DEPTH)
+        sources = _extract_sources(search_response)
+        search_context = _format_search_context(search_response)
+    except Exception:
+        logger.exception("[debate] research step failed; falling back to non-grounded response")
+
     prompt = (
         f"{DEBATE_CHAT_PROMPT}\n"
         f"<TOPIC>{topic}</TOPIC>\n"
         f"<LATEST_USER_TURN>{latest_user_turn}</LATEST_USER_TURN>\n"
-        f"<CONVERSATION>{'\\n'.join(conversation_lines)}</CONVERSATION>"
+        f"<CONVERSATION>{'\\n'.join(conversation_lines)}</CONVERSATION>\n"
+        f"<SEARCH_QUERY>{search_query}</SEARCH_QUERY>\n"
+        f"<WEB_EVIDENCE>{search_context}</WEB_EVIDENCE>"
     )
 
     try:
@@ -136,16 +246,23 @@ async def generate_debate_reply(
         try:
             parsed = json.loads(cleaned)
             text = str(parsed.get("response_text", "")).strip()
+            model_sources = parsed.get("sources", [])
+            if not isinstance(model_sources, list):
+                model_sources = []
+            merged_sources = [str(url).strip() for url in model_sources if str(url).strip()]
+            for url in sources:
+                if url and url not in merged_sources:
+                    merged_sources.append(url)
             if text:
-                return text
+                return {"response_text": text, "sources": merged_sources[:5]}
         except json.JSONDecodeError:
             # Fallback: model returned plain text; use it directly.
             pass
 
-        return cleaned.strip()
+        return {"response_text": cleaned.strip(), "sources": sources[:5]}
     except Exception:
         logger.exception("Failed to generate debate chat reply")
-        return ""
+        return {"response_text": "", "sources": sources[:5]}
 
 
 def compute_final_score(score_rows: List[Dict[str, int]]) -> Dict[str, Any]:

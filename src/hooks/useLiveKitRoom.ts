@@ -13,7 +13,14 @@ import type {
 type DataChannelMessage =
   | { type: "transcript"; text: string; is_final: boolean }
   | { type: "flag"; claim: string; verdict: string; reasoning: string; sources: string[] }
-  | { type: "debate_turn"; role: "user" | "model"; turnId: string; text: string; timestamp: string }
+  | {
+      type: "debate_turn";
+      role: "user" | "model";
+      turnId: string;
+      text: string;
+      timestamp: string;
+      sources?: string[];
+    }
   | {
       type: "debate_score";
       turnId: string;
@@ -275,6 +282,7 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
             turnId: string;
             text: string;
             timestamp: string;
+            sources?: string[];
           };
           setDebateTurns((prev) => {
             if (prev.some((turn) => turn.id === debateTurn.turnId)) return prev;
@@ -285,6 +293,9 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
                 role: debateTurn.role,
                 text: debateTurn.text,
                 timestamp: debateTurn.timestamp,
+                sources: Array.isArray(debateTurn.sources)
+                  ? debateTurn.sources.filter((url): url is string => typeof url === "string")
+                  : [],
               },
             ];
           });
