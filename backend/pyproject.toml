@@ -10,7 +10,7 @@ requires-python = ">=3.10, <3.15"
 
 dependencies = [
     "google-genai>=1.73.1",
-    "livekit-agents[silero,turn-detector]~=1.5",
+    "livekit-agents[silero,turn-detector,gradium]~=1.5",
     "livekit-plugins-ai-coustics~=0.2",
     "livekit-plugins-deepgram>=1.5.6",
     "python-dotenv",
