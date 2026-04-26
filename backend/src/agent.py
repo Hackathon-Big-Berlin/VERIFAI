@@ -289,21 +289,44 @@ async def my_agent(ctx: JobContext):
         ctx.room.on("data_received", on_data_received)
 
         await session.start(
-                agent=Agent(instructions="Transcribe user speech. Do not respond."),
-                room=ctx.room,
-                room_options=room_io.RoomOptions(
-                    # Tear down the room when the user disconnects so the next
-                    # Connect creates a fresh room and re-triggers agent dispatch
-                    # (rooms otherwise linger ~5min on LiveKit Cloud and reconnecting
-                    # joins the existing room without dispatching the agent).
-                    delete_room_on_close=True,
-                    audio_input=room_io.AudioInputOptions(
-                        noise_cancellation=ai_coustics.audio_enhancement(
-                            model=ai_coustics.EnhancerModel.QUAIL_VF_L
+            agent=Agent(instructions="Transcribe user speech. Do not respond."),
+            room=ctx.room,
+            room_options=room_io.RoomOptions(
+                # Tear down the room when the user disconnects so the next
+                # Connect creates a fresh room and re-triggers agent dispatch
+                # (rooms otherwise linger ~5min on LiveKit Cloud and reconnecting
+                # joins the existing room without dispatching the agent).
+                delete_room_on_close=True,
+                audio_input=room_io.AudioInputOptions(
+                    noise_cancellation=ai_coustics.audio_enhancement(
+                        # QUAIL_VF_L  → best for single foreground speaker (our case)
+                        # QUAIL_L     → better if you ever need multi-speaker / diarization
+                        model=ai_coustics.EnhancerModel.QUAIL_VF_L,
+
+                        # enhancement_level controls suppression aggressiveness:
+                        #   0.5 = conservative — always preserves foreground speech, minimal artifacts
+                        #   0.8 = balanced    — optimal WER on challenging real-world data (recommended)
+                        #   1.0 = aggressive  — maximum suppression, risk of over-filtering quiet speech
+                        model_parameters=ai_coustics.ModelParameters(enhancement_level=0.8),
+
+                        # VAD settings tune how the model detects speech boundaries.
+                        vad_settings=ai_coustics.VadSettings(
+                            # How long (seconds) to keep VAD "on" after speech ends — prevents clipping
+                            # Range: 0.0–1.0s  |  Lower = tighter turn-taking, Higher = less cutoff
+                            speech_hold_duration=0.03,
+
+                            # How sensitive VAD is to speech vs noise
+                            # Range: 1.0–15.0  |  Higher = more sensitive (catches whispers, but more false triggers)
+                            sensitivity=6.0,
+
+                            # Minimum duration (seconds) before a segment is treated as speech
+                            # Range: 0.0–1.0s  |  Raise this to filter out very short utterances/clicks
+                            minimum_speech_duration=0.0,
                         ),
                     ),
                 ),
-            )
+            ),
+        )
     finally:
         fact_check_worker_task.cancel()
         await asyncio.gather(fact_check_worker_task, return_exceptions=True)
