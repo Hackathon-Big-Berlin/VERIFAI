@@ -15,7 +15,7 @@ from livekit.agents import (
 from livekit.plugins import ai_coustics, silero
 
 from buffer import TranscriptBuffer
-from context_loader import parse_context_text
+from context_loader import context_likely_relevant, parse_context_text
 from fact_checker import fact_check_sentence
 
 logger = logging.getLogger("agent")
@@ -111,6 +111,7 @@ async def my_agent(ctx: JobContext):
                         "verdict": verdict,
                         "reasoning": result.get("reasoning", ""),
                         "sources": result.get("sources", []),
+                        "used_trusted_context": context_likely_relevant(claim, trusted_context),
                     }
                 ).encode("utf-8")
 
@@ -211,15 +212,46 @@ async def my_agent(ctx: JobContext):
             context_state["text"] = "\n".join(statements)
             logger.info("[context] gospel mode: %s statements stored", len(statements))
             await publish_context_status("ready", kept=len(statements), total=len(statements))
-        else:
-            # Nuanced vetting lands in the next commit. For now, accept it
-            # but treat it like gospel so the upload path works end-to-end.
-            context_state["text"] = "\n".join(statements)
-            logger.info(
-                "[context] nuanced mode placeholder (vetting not implemented yet): %s statements stored",
-                len(statements),
-            )
-            await publish_context_status("ready", kept=len(statements), total=len(statements))
+            return
+
+        # Nuanced: run each statement through the pipeline standalone, in
+        # parallel, and keep everything except FALSE verdicts (and crashes).
+        total = len(statements)
+        await publish_context_status("vetting", kept=0, total=total)
+
+        survivors: list[str] = []
+        # `as_completed` lets us push progress as each fact-check finishes,
+        # rather than waiting for the slowest one.
+        coros = [fact_check_sentence(stmt, "", "") for stmt in statements]
+        for fut in asyncio.as_completed(coros):
+            try:
+                result = await fut
+            except Exception:
+                logger.exception("[context] vetting task crashed")
+                await publish_context_status("vetting", kept=len(survivors), total=total)
+                continue
+
+            status = result.get("status")
+            verdict = result.get("verdict")
+            original = result.get("claim", "")
+
+            if status == "success" and verdict == "FALSE":
+                logger.info("[context] vetting filtered FALSE: %s", original[:80])
+            elif status == "error":
+                logger.warning("[context] vetting error for: %s", original[:80])
+            else:
+                # Keep TRUE, PARTIALLY TRUE, INCONCLUSIVE, and skipped.
+                survivors.append(original)
+
+            await publish_context_status("vetting", kept=len(survivors), total=total)
+
+        context_state["text"] = "\n".join(survivors)
+        logger.info(
+            "[context] nuanced vetting complete: %s/%s survived",
+            len(survivors),
+            total,
+        )
+        await publish_context_status("ready", kept=len(survivors), total=total)
 
     def on_data_received(packet) -> None:
         if packet.topic != "context":
