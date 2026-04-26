@@ -56,6 +56,37 @@ Return valid JSON only with this shape:
 }
 """
 
+DEBATE_EVALUATION_WITH_CLAIMS_PROMPT = """
+You are a strict debate coach evaluator for the USER turn.
+
+Evaluate whether the user defended their claims, rebutted opposing arguments,
+and used evidence and logic effectively.
+
+Use the provided claim checks as supporting evidence when scoring the turn.
+
+Return valid JSON only with this shape:
+{
+    "scores": {
+        "logicalConsistency": 0,
+        "evidenceQuality": 0,
+        "rebuttalEffectiveness": 0,
+        "clarityStructure": 0,
+        "responsiveness": 0
+    },
+    "strongClaims": [
+        {"claim": "...", "strength": "strong", "reason": "..."}
+    ],
+    "weakClaims": [
+        {"claim": "...", "strength": "weak", "reason": "..."}
+    ],
+    "logicalFallacies": [
+        {"fallacy": "...", "evidence": "...", "reason": "..."}
+    ],
+    "argumentImpact": "...",
+    "coachingSuggestion": "..."
+}
+"""
+
 DEBATE_CHAT_PROMPT = """
 You are the AI side of a live debate.
 
@@ -265,6 +296,100 @@ async def generate_debate_reply(
     except Exception:
         logger.exception("Failed to generate debate chat reply")
         return {"response_text": "", "sources": sources[:5]}
+
+
+async def evaluate_user_turn_coaching(
+    topic: str,
+    user_turn: str,
+    conversation: List[Dict[str, str]],
+    claim_checks: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    client = genai.Client(api_key=_get_gemini_api_key())
+
+    conversation_lines: List[str] = []
+    for turn in conversation[-12:]:
+        role = str(turn.get("role", "user")).upper()
+        text = str(turn.get("text", "")).strip()
+        if text:
+            conversation_lines.append(f"{role}: {text}")
+
+    claim_check_lines: List[str] = []
+    for check in claim_checks[:10]:
+        claim = str(check.get("claim", "")).strip()
+        verdict = str(check.get("verdict", "")).strip()
+        reasoning = str(check.get("reasoning", "")).strip()
+        sources = check.get("sources", [])
+        source_text = ", ".join(str(url).strip() for url in sources if str(url).strip())
+        claim_check_lines.append(
+            f"CLAIM: {claim}\nVERDICT: {verdict}\nREASONING: {reasoning}\nSOURCES: {source_text}"
+        )
+
+    prompt = (
+        f"{DEBATE_EVALUATION_WITH_CLAIMS_PROMPT}\n"
+        f"<TOPIC>{topic}</TOPIC>\n"
+        f"<USER_TURN>{user_turn}</USER_TURN>\n"
+        f"<CONVERSATION>{'\\n'.join(conversation_lines)}</CONVERSATION>\n"
+        f"<CLAIM_CHECKS>{'\\n\n'.join(claim_check_lines)}</CLAIM_CHECKS>"
+    )
+
+    response = await client.aio.models.generate_content(
+        model=GEMINI_MODEL_NAME,
+        contents=prompt,
+    )
+
+    raw = response.text if response and response.text else ""
+    cleaned = _clean_json_response(raw)
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        logger.exception("Failed to parse debate coaching response")
+        return {
+            "scores": {
+                "logicalConsistency": 0,
+                "evidenceQuality": 0,
+                "rebuttalEffectiveness": 0,
+                "clarityStructure": 0,
+                "responsiveness": 0,
+            },
+            "strongClaims": [],
+            "weakClaims": [],
+            "logicalFallacies": [],
+            "argumentImpact": "",
+            "coachingSuggestion": "",
+        }
+
+    scores = parsed.get("scores", {})
+    if not isinstance(scores, dict):
+        scores = {}
+
+    normalized_scores = {
+        "logicalConsistency": _clamp_score(scores.get("logicalConsistency", 0)),
+        "evidenceQuality": _clamp_score(scores.get("evidenceQuality", 0)),
+        "rebuttalEffectiveness": _clamp_score(scores.get("rebuttalEffectiveness", 0)),
+        "clarityStructure": _clamp_score(scores.get("clarityStructure", 0)),
+        "responsiveness": _clamp_score(scores.get("responsiveness", 0)),
+    }
+
+    strong_claims = parsed.get("strongClaims", [])
+    if not isinstance(strong_claims, list):
+        strong_claims = []
+
+    weak_claims = parsed.get("weakClaims", [])
+    if not isinstance(weak_claims, list):
+        weak_claims = []
+
+    logical_fallacies = parsed.get("logicalFallacies", [])
+    if not isinstance(logical_fallacies, list):
+        logical_fallacies = []
+
+    return {
+        "scores": normalized_scores,
+        "strongClaims": strong_claims[:5],
+        "weakClaims": weak_claims[:5],
+        "logicalFallacies": logical_fallacies[:5],
+        "argumentImpact": str(parsed.get("argumentImpact", "")).strip(),
+        "coachingSuggestion": str(parsed.get("coachingSuggestion", "")).strip(),
+    }
 
 
 def compute_final_score(score_rows: List[Dict[str, int]]) -> Dict[str, Any]:

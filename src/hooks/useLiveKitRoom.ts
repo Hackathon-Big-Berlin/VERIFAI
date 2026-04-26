@@ -334,7 +334,6 @@ export function useLiveKitRoom(mode: AppMode = "normal") {
           message.type === "debate_score" &&
           typeof (message as { turnId?: unknown }).turnId === "string"
         ) {
-          if (modeRef.current !== "debate") return;
           const scoreUpdate = message as DebateTurnScore & { type: "debate_score" };
           setDebateScores((prev) => {
             const idx = prev.findIndex((item) => item.turnId === scoreUpdate.turnId);
@@ -355,7 +354,6 @@ export function useLiveKitRoom(mode: AppMode = "normal") {
           message.type === "debate_final_score" &&
           typeof (message as { overall?: unknown }).overall === "number"
         ) {
-          if (modeRef.current !== "debate") return;
           setDebateFinalScore(message as DebateFinalScore);
           return;
         }
@@ -403,7 +401,7 @@ export function useLiveKitRoom(mode: AppMode = "normal") {
 
       const mediaElement = track.attach();
       mediaElement.autoplay = true;
-      mediaElement.playsInline = true;
+      mediaElement.setAttribute("playsinline", "true");
       container.appendChild(mediaElement);
       audioElementsRef.current.set(key, mediaElement);
     });
