@@ -1,4 +1,4 @@
-import { Fragment, memo, useMemo, useRef, type ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { FactCheckFlag, FactCheckVerdict, TranscriptSession } from "@/lib/types";
@@ -80,99 +80,7 @@ function renderHighlightedTranscript(text: string, flags: FactCheckFlag[]): Reac
   return nodes;
 }
 
-// Pre-filter flags to those that actually match each session's text. The
-// returned arrays are reference-stable across renders when content matches —
-// adding a flag that hits session 1 doesn't churn session 2's array, so
-// `React.memo` on each SessionArticle skips re-rendering unrelated sessions.
-function useFlagsBySession(
-  sessions: TranscriptSession[],
-  flags: FactCheckFlag[],
-): Map<string, FactCheckFlag[]> {
-  const previousRef = useRef<Map<string, FactCheckFlag[]>>(new Map());
-  return useMemo(() => {
-    const next = new Map<string, FactCheckFlag[]>();
-    for (const session of sessions) {
-      const lowered = session.text.toLowerCase();
-      const matching = flags.filter((f) => {
-        const needle = normalizeForSearch(f.claim);
-        return needle.length > 0 && lowered.includes(needle);
-      });
-      const prev = previousRef.current.get(session.id);
-      if (
-        prev &&
-        prev.length === matching.length &&
-        prev.every((f, i) => f === matching[i])
-      ) {
-        next.set(session.id, prev);
-      } else {
-        next.set(session.id, matching);
-      }
-    }
-    previousRef.current = next;
-    return next;
-  }, [sessions, flags]);
-}
-
-type SessionArticleProps = {
-  session: TranscriptSession;
-  flags: FactCheckFlag[];
-  isActive: boolean;
-  index: number;
-};
-
-// React.memo so a flag arriving for one session doesn't re-render the others.
-// Default shallow compare works because `flags` is reference-stable per
-// session via useFlagsBySession.
-const SessionArticle = memo(function SessionArticle({
-  session,
-  flags,
-  isActive,
-  index,
-}: SessionArticleProps) {
-  const hasPending = session.pendingText.length > 0;
-  const hasAnyText = session.text.length > 0 || hasPending;
-
-  // Cache the highlighted nodes — only recompute when this session's
-  // committed text or its matching flags actually change. Interim
-  // transcript updates (pendingText) don't invalidate it.
-  const highlightedText = useMemo(
-    () => renderHighlightedTranscript(session.text, flags),
-    [session.text, flags],
-  );
-
-  return (
-    <article
-      className={`border-b border-border px-4 py-5 md:px-6 ${
-        isActive ? "bg-accent" : "bg-background"
-      }`}
-    >
-      <header className="mb-2 flex items-center justify-between text-xs font-mono text-muted-foreground">
-        <span>
-          Session {index + 1} · started {session.startedAt}
-        </span>
-        {isActive ? <span className="text-primary">live</span> : null}
-      </header>
-
-      {hasAnyText ? (
-        <p className="text-base leading-7 text-foreground md:text-lg">
-          {highlightedText}
-          {hasPending ? (
-            <>
-              {session.text ? " " : ""}
-              <span className="text-muted-foreground italic">{session.pendingText}</span>
-            </>
-          ) : null}
-        </p>
-      ) : (
-        <p className="text-sm italic text-muted-foreground">Listening for speech...</p>
-      )}
-    </article>
-  );
-});
-
 export function TranscriptPanel({ sessions, flags, isLive }: TranscriptPanelProps) {
-  const flagsBySession = useFlagsBySession(sessions, flags);
-
   return (
     <section className="flex min-h-0 flex-1 flex-col border-b border-border bg-background lg:border-b-0 lg:border-r">
       <header className="flex items-center justify-between border-b border-border px-4 py-4 md:px-6">
@@ -194,15 +102,46 @@ export function TranscriptPanel({ sessions, flags, isLive }: TranscriptPanelProp
           {sessions.length === 0 ? (
             <div className="px-4 py-10 text-muted-foreground md:px-6">Waiting for transcript audio...</div>
           ) : (
-            sessions.map((session, index) => (
-              <SessionArticle
-                key={session.id}
-                session={session}
-                flags={flagsBySession.get(session.id) ?? []}
-                isActive={isLive && index === sessions.length - 1}
-                index={index}
-              />
-            ))
+            sessions.map((session, index) => {
+              const isActive = isLive && index === sessions.length - 1;
+              const hasPending = session.pendingText.length > 0;
+              const hasAnyText = session.text.length > 0 || hasPending;
+              // Apply every flag to every session — the substring match
+              // naturally selects whichever session contains the claim text.
+              // Highlights persist after disconnect because they're driven by
+              // the flags array, not by `isActive`.
+              const highlightedText = renderHighlightedTranscript(session.text, flags);
+
+              return (
+                <article
+                  key={session.id}
+                  className={`border-b border-border px-4 py-5 md:px-6 ${
+                    isActive ? "bg-accent" : "bg-background"
+                  }`}
+                >
+                  <header className="mb-2 flex items-center justify-between text-xs font-mono text-muted-foreground">
+                    <span>
+                      Session {index + 1} · started {session.startedAt}
+                    </span>
+                    {isActive ? <span className="text-primary">live</span> : null}
+                  </header>
+
+                  {hasAnyText ? (
+                    <p className="text-base leading-7 text-foreground md:text-lg">
+                      {highlightedText}
+                      {hasPending ? (
+                        <>
+                          {session.text ? " " : ""}
+                          <span className="text-muted-foreground italic">{session.pendingText}</span>
+                        </>
+                      ) : null}
+                    </p>
+                  ) : (
+                    <p className="text-sm italic text-muted-foreground">Listening for speech...</p>
+                  )}
+                </article>
+              );
+            })
           )}
         </div>
       </ScrollArea>
