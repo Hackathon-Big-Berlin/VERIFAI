@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { DebateTurn } from "@/lib/types";
 
@@ -16,6 +17,12 @@ export function DebateChatPanel({
   isStopped,
   onStop,
 }: DebateChatPanelProps) {
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
+  }, [turns, liveUserDraft, isLive]);
+
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-background">
       <header className="flex items-center justify-between border-b border-border px-4 py-4 md:px-6">
@@ -77,6 +84,8 @@ export function DebateChatPanel({
               <p className="italic">{liveUserDraft}</p>
             </article>
           ) : null}
+
+          <div ref={bottomRef} aria-hidden="true" />
         </div>
       </ScrollArea>
     </section>
