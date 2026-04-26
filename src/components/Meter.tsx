@@ -28,7 +28,7 @@ export const Meter: React.FC<MeterProps> = ({ flags, activeSessionId, rightSlot 
   return (
     <div className="w-full bg-card border-b border-border z-10">
       <div className="flex w-full flex-col md:flex-row">
-        <div className="w-full md:w-1/2 p-4 flex flex-col gap-3">
+        <div className="w-full md:w-4/5 p-4 flex flex-col gap-3">
           <div className="flex justify-between items-baseline gap-3">
             <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
               Live Fact Check Meter
@@ -76,7 +76,7 @@ export const Meter: React.FC<MeterProps> = ({ flags, activeSessionId, rightSlot 
         </div>
 
         {rightSlot ? (
-          <div className="w-full md:w-1/2 p-4 md:border-l border-border">
+          <div className="w-full md:w-1/5 p-4 md:border-l border-border">
             {rightSlot}
           </div>
         ) : null}
