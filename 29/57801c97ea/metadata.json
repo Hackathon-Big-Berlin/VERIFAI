@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.5.6",
+  "checkpoint_id": "2957801c97ea",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "backend/src/agent.py",
+    "backend/src/debate_coach.py",
+    "package-lock.json",
+    "src/components/Meter.tsx",
+    "src/components/transcript/TranscriptPanel.tsx",
+    "src/hooks/useLiveKitRoom.ts",
+    "src/index.css",
+    "src/lib/types.ts",
+    "src/pages/Index.tsx"
+  ],
+  "sessions": [
+    {
+      "metadata": "/29/57801c97ea/0/metadata.json",
+      "transcript": "/29/57801c97ea/0/full.jsonl",
+      "content_hash": "/29/57801c97ea/0/content_hash.txt",
+      "prompt": "/29/57801c97ea/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 103,
+    "cache_creation_tokens": 286785,
+    "cache_read_tokens": 6488231,
+    "output_tokens": 70591,
+    "api_call_count": 75
+  }
+}

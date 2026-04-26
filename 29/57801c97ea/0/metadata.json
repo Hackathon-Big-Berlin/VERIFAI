@@ -1,0 +1,88 @@
+{
+  "cli_version": "0.5.6",
+  "checkpoint_id": "2957801c97ea",
+  "session_id": "43b8510b-5f2b-4f49-8f94-aa57f1fc538d",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-26T08:54:41.106257Z",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "backend/src/agent.py",
+    "backend/src/debate_coach.py",
+    "package-lock.json",
+    "src/components/Meter.tsx",
+    "src/components/transcript/TranscriptPanel.tsx",
+    "src/hooks/useLiveKitRoom.ts",
+    "src/index.css",
+    "src/lib/types.ts",
+    "src/pages/Index.tsx"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "c64b51fe5139",
+  "token_usage": {
+    "input_tokens": 103,
+    "cache_creation_tokens": 286785,
+    "cache_read_tokens": 6488231,
+    "output_tokens": 70591,
+    "api_call_count": 75
+  },
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-26T08:54:41.090616Z",
+    "agent_lines": 346,
+    "agent_removed": 200,
+    "human_added": 0,
+    "human_modified": 4,
+    "human_removed": 13,
+    "total_committed": 350,
+    "total_lines_changed": 563,
+    "agent_percentage": 96.98046181172292,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 22,
+      "user_lines_removed": 13,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "package-lock.json": 22
+      },
+      "user_removed_per_file": {
+        "package-lock.json": 13
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 79,
+      "agent_lines_removed": 43
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 83,
+      "agent_lines_removed": 45
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 384,
+      "agent_lines_removed": 213
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 385,
+      "agent_lines_removed": 214
+    }
+  ]
+}
