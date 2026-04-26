@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { motion } from "framer-motion";
 import { ExternalLink } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -13,29 +14,27 @@ const verdictLabel: Record<FactCheckVerdict, string> = {
 
 const verdictStyles: Record<FactCheckVerdict, { card: string; badge: string; quote: string }> = {
   "TRUE": {
-    card: "border-green-300 bg-green-50",
-    badge: "border-transparent bg-green-600 text-white hover:bg-green-600/90",
-    quote: "border-green-500",
+    card: "border-green-500/30 bg-green-500/5 shadow-[0_0_15px_rgba(34,197,94,0.1)]",
+    badge: "border-transparent bg-green-500/20 text-green-400 shadow-[0_0_10px_rgba(34,197,94,0.3)]",
+    quote: "border-green-500/50 text-green-50",
   },
   "FALSE": {
-    card: "border-red-300 bg-red-50",
-    badge: "border-transparent bg-red-600 text-white hover:bg-red-600/90",
-    quote: "border-red-500",
+    card: "border-red-500/30 bg-red-500/5 shadow-[0_0_15px_rgba(239,68,68,0.1)]",
+    badge: "border-transparent bg-red-500/20 text-red-400 shadow-[0_0_10px_rgba(239,68,68,0.3)]",
+    quote: "border-red-500/50 text-red-50",
   },
   "PARTIALLY TRUE": {
-    card: "border-orange-300 bg-orange-50",
-    badge: "border-transparent bg-orange-500 text-white hover:bg-orange-500/90",
-    quote: "border-orange-500",
+    card: "border-orange-500/30 bg-orange-500/5 shadow-[0_0_15px_rgba(249,115,22,0.1)]",
+    badge: "border-transparent bg-orange-500/20 text-orange-400 shadow-[0_0_10px_rgba(249,115,22,0.3)]",
+    quote: "border-orange-500/50 text-orange-50",
   },
   "INCONCLUSIVE": {
-    card: "border-slate-300 bg-slate-100",
-    badge: "border-transparent bg-slate-500 text-white hover:bg-slate-500/90",
-    quote: "border-slate-400",
+    card: "border-slate-500/30 bg-slate-500/5 shadow-[0_0_15px_rgba(100,116,139,0.1)]",
+    badge: "border-transparent bg-slate-500/20 text-slate-300 shadow-[0_0_10px_rgba(100,116,139,0.3)]",
+    quote: "border-slate-500/50 text-slate-200",
   },
 };
 
-// Animate text appearing one character at a time so each flag feels like it's
-// streaming in, even though the payload arrives as a single data-channel message.
 function useTypewriter(text: string, speed: number, enabled: boolean) {
   const [displayed, setDisplayed] = useState("");
 
@@ -72,32 +71,43 @@ export function FactCheckCard({ flag }: FactCheckCardProps) {
   const { displayed: reasoningText, isDone: reasoningDone } = useTypewriter(flag.reasoning, 12, claimDone);
 
   return (
-    <article className={cn("rounded-md border p-4 text-card-foreground shadow-sm transition-colors", styles.card)}>
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-1.5">
+    <motion.article 
+      layout
+      initial={{ opacity: 0, y: 20, scale: 0.95 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.9, filter: "blur(5px)" }}
+      transition={{ type: "spring", stiffness: 300, damping: 25 }}
+      className={cn("rounded-xl border p-5 backdrop-blur-md transition-colors", styles.card)}
+    >
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
           <Badge className={styles.badge}>{verdictLabel[verdict] ?? verdict}</Badge>
           {flag.used_trusted_context && (
             <span
-              className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
+              className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-primary"
               title="This verdict was likely informed by your uploaded context."
             >
               from context
             </span>
           )}
         </div>
-        <span className="font-mono text-xs uppercase tracking-normal text-muted-foreground">{flag.type}</span>
+        <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/60">{flag.type}</span>
       </div>
-      <blockquote className={cn("border-l-2 pl-3 text-sm font-medium leading-6 text-foreground", styles.quote)}>
+      <blockquote className={cn("border-l-2 pl-4 text-sm font-medium leading-relaxed", styles.quote)}>
         “{claimText}
-        {!claimDone && <span className="ml-0.5 inline-block animate-pulse">▍</span>}”
+        {!claimDone && <span className="ml-0.5 inline-block animate-pulse text-white">▍</span>}”
       </blockquote>
-      <p className="mt-3 min-h-[1.5rem] text-sm leading-6 text-muted-foreground">
+      <p className="mt-4 min-h-[1.5rem] text-sm leading-relaxed text-muted-foreground">
         {reasoningText}
-        {claimDone && !reasoningDone && <span className="ml-0.5 inline-block animate-pulse">▍</span>}
+        {claimDone && !reasoningDone && <span className="ml-0.5 inline-block animate-pulse text-white">▍</span>}
       </p>
 
       {reasoningDone && flag.sources && flag.sources.length > 0 && (
-        <ul className="mt-4 flex flex-wrap gap-1.5">
+        <motion.ul 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mt-5 flex flex-wrap gap-2"
+        >
           {flag.sources.slice(0, 3).map((url, i) => (
             <li key={`${url}-${i}`}>
               <a
@@ -105,22 +115,19 @@ export function FactCheckCard({ flag }: FactCheckCardProps) {
                 target="_blank"
                 rel="noreferrer"
                 title={url}
-                className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background px-2 py-1 text-xs font-medium text-foreground transition-colors hover:border-primary/50 hover:text-primary"
+                className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-white/80 transition-colors hover:border-primary/50 hover:bg-primary/10 hover:text-primary shadow-[0_0_10px_rgba(255,255,255,0.05)]"
               >
                 <ExternalLink className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
                 <span>{sourceLabel(url)}</span>
               </a>
             </li>
           ))}
-        </ul>
+        </motion.ul>
       )}
-    </article>
+    </motion.article>
   );
 }
 
-// Show a friendly hostname (e.g. "wikipedia.org") for the link text rather
-// than the raw URL or a generic "Source". Falls back to the original URL if
-// it can't be parsed.
 function sourceLabel(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, "");

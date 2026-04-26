@@ -2,88 +2,50 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
-All colors MUST be HSL.
-*/
-
 @layer base {
   :root {
-    --background: 210 20% 98%;
-    --foreground: 215 28% 9%;
-
-    --card: 0 0% 100%;
-    --card-foreground: 215 28% 9%;
-
-    --popover: 0 0% 100%;
-    --popover-foreground: 215 28% 9%;
-
-    --primary: 166 84% 28%;
-    --primary-foreground: 0 0% 100%;
-
-    --secondary: 210 18% 94%;
-    --secondary-foreground: 215 28% 9%;
-
-    --muted: 210 16% 92%;
-    --muted-foreground: 215 13% 38%;
-
-    --accent: 166 50% 92%;
-    --accent-foreground: 166 84% 18%;
-
-    --destructive: 0 72% 46%;
-    --destructive-foreground: 0 0% 100%;
-
-    --border: 214 18% 84%;
-    --input: 214 18% 84%;
-    --ring: 166 84% 28%;
-
-    --radius: 0.5rem;
-
-    --sidebar-background: 210 20% 98%;
-    --sidebar-foreground: 215 28% 9%;
-    --sidebar-primary: 166 84% 28%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 166 50% 92%;
-    --sidebar-accent-foreground: 166 84% 18%;
-    --sidebar-border: 214 18% 84%;
-    --sidebar-ring: 166 84% 28%;
-  }
-
-  .dark {
-    --background: 215 28% 9%;
+    /* Forced Dark Glassmorphism Theme */
+    --background: 230 25% 6%;
     --foreground: 210 20% 98%;
 
-    --card: 215 24% 13%;
+    /* Translucent glass layers */
+    --card: 230 25% 10%;
     --card-foreground: 210 20% 98%;
 
-    --popover: 215 24% 13%;
+    --popover: 230 25% 10%;
     --popover-foreground: 210 20% 98%;
 
-    --primary: 166 76% 44%;
-    --primary-foreground: 215 28% 9%;
+    /* Neon/Cyan primary for sleek modern feel */
+    --primary: 185 100% 45%; 
+    --primary-foreground: 230 25% 6%;
 
-    --secondary: 215 22% 16%;
+    /* Secondary glass layer */
+    --secondary: 230 25% 14%;
     --secondary-foreground: 210 20% 98%;
 
-    --muted: 215 18% 20%;
-    --muted-foreground: 210 12% 70%;
+    --muted: 230 20% 18%;
+    --muted-foreground: 215 15% 65%;
 
-    --accent: 166 35% 18%;
-    --accent-foreground: 166 76% 84%;
+    --accent: 185 100% 45%;
+    --accent-foreground: 230 25% 6%;
 
-    --destructive: 0 68% 48%;
+    --destructive: 350 80% 55%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 215 17% 24%;
-    --input: 215 17% 24%;
-    --ring: 166 76% 44%;
-    --sidebar-background: 215 28% 9%;
+    --border: 230 25% 20%;
+    --input: 230 25% 20%;
+    --ring: 185 100% 45%;
+
+    --radius: 1rem;
+
+    --sidebar-background: 230 25% 8%;
     --sidebar-foreground: 210 20% 98%;
-    --sidebar-primary: 166 76% 44%;
-    --sidebar-primary-foreground: 215 28% 9%;
-    --sidebar-accent: 166 35% 18%;
-    --sidebar-accent-foreground: 166 76% 84%;
-    --sidebar-border: 215 17% 24%;
-    --sidebar-ring: 166 76% 44%;
+    --sidebar-primary: 185 100% 45%;
+    --sidebar-primary-foreground: 230 25% 6%;
+    --sidebar-accent: 230 25% 16%;
+    --sidebar-accent-foreground: 210 20% 98%;
+    --sidebar-border: 230 25% 20%;
+    --sidebar-ring: 185 100% 45%;
   }
 }
 
@@ -93,10 +55,25 @@ All colors MUST be HSL.
   }
 
   html {
-    color-scheme: light;
+    color-scheme: dark;
   }
 
   body {
-    @apply bg-background text-foreground antialiased;
+    /* Deep animated gradient background */
+    @apply bg-background text-foreground antialiased min-h-screen bg-fixed;
+    background-image: radial-gradient(circle at 15% 50%, rgba(20, 40, 60, 0.4), transparent 50%),
+                      radial-gradient(circle at 85% 30%, rgba(10, 50, 50, 0.3), transparent 50%);
+  }
+  
+  /* Custom scrollbar for webkit to match the sleek dark theme */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-muted/50 rounded-full hover:bg-muted transition-colors;
   }
 }
