@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -68,7 +69,7 @@ async def my_agent(ctx: JobContext):
 
     pending_publishes: set[asyncio.Task] = set()
 
-    app_mode: Literal["analysis", "debate"] = "analysis"
+    app_mode: Literal["normal", "interview", "debate"] = "normal"
 
     transcript_buffer = TranscriptBuffer()
     sentence_version = 0
@@ -136,6 +137,20 @@ async def my_agent(ctx: JobContext):
                     verdict,
                     claim[:80],
                 )
+
+                # Interview mode: speak a short alert when a claim is FALSE so
+                # the interviewer hears it without watching the sidebar.
+                if app_mode == "interview" and verdict == "FALSE":
+                    reasoning_text = result.get("reasoning", "")
+                    match = re.search(r"[^.!?]+[.!?]", reasoning_text)
+                    first_sentence = match.group(0).strip() if match else reasoning_text
+                    warning_text = f"Fact check alert: {first_sentence}"
+                    try:
+                        logger.info("[worker] synthesizing interview alert: %r", warning_text)
+                        async for audio_event in tts.synthesize(warning_text):
+                            await audio_source.capture_frame(audio_event.frame)
+                    except Exception:
+                        logger.exception("[worker] failed to synthesize interview alert")
             except asyncio.CancelledError as e:
                 logger.warning(
                     "[worker] cancellation received version=%s cause=%r — keeping worker alive",
@@ -279,22 +294,22 @@ async def my_agent(ctx: JobContext):
             return
 
         mode = payload.get("mode")
-        if mode not in ("analysis", "debate"):
+        if mode not in ("normal", "interview", "debate"):
             logger.warning("[control] unsupported mode: %r", mode)
             return
         if mode == app_mode:
             return
 
         app_mode = mode
-        if app_mode == "analysis":
-            debate_pending_finals.clear()
-            if debate_silence_task and not debate_silence_task.done():
-                debate_silence_task.cancel()
-        else:
+        if app_mode == "debate":
             debate_topic = None
             debate_history.clear()
             debate_pending_finals.clear()
             debate_turn_counter = 0
+        else:
+            debate_pending_finals.clear()
+            if debate_silence_task and not debate_silence_task.done():
+                debate_silence_task.cancel()
 
         logger.info("[control] switched app mode to %s", app_mode)
 

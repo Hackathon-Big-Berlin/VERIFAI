@@ -18,13 +18,18 @@ export type TranscriptSession = {
 
 export type FactCheckVerdict = "TRUE" | "FALSE" | "PARTIALLY TRUE" | "INCONCLUSIVE";
 
-// Find this interface in your types file and update the keys
 export interface FactCheckFlag {
   type: "flag";
-  claim: string;       // Changed from 'sentence'
+  claim: string;
   verdict: string;
-  reasoning: string;   // Changed from 'reason'
-  sources: string[];   // Changed from 'source' (string) to array
+  reasoning: string;
+  sources: string[];
+  // Tagged by useLiveKitRoom with the active session id when the flag arrives,
+  // so Meter can scope its counts to the current Connect→Disconnect cycle.
+  sessionId: string;
+  // Reserved for backend-driven "this verdict was informed by uploaded
+  // context" badge; the current backend never sets it.
+  used_trusted_context?: boolean;
 }
 
 export type DebateRole = "user" | "model";

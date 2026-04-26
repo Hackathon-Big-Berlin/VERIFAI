@@ -178,11 +178,12 @@ async def _build_research_query(
         if text:
             conversation_lines.append(f"{role}: {text}")
 
+    conversation_block = "\n".join(conversation_lines)
     prompt = (
         f"{DEBATE_RESEARCH_QUERY_PROMPT}\n"
         f"<TOPIC>{topic}</TOPIC>\n"
         f"<LATEST_USER_TURN>{latest_user_turn}</LATEST_USER_TURN>\n"
-        f"<CONVERSATION>{'\\n'.join(conversation_lines)}</CONVERSATION>"
+        f"<CONVERSATION>{conversation_block}</CONVERSATION>"
     )
 
     response = await client.aio.models.generate_content(
@@ -225,11 +226,12 @@ async def generate_debate_reply(
     except Exception:
         logger.exception("[debate] research step failed; falling back to non-grounded response")
 
+    conversation_block = "\n".join(conversation_lines)
     prompt = (
         f"{DEBATE_CHAT_PROMPT}\n"
         f"<TOPIC>{topic}</TOPIC>\n"
         f"<LATEST_USER_TURN>{latest_user_turn}</LATEST_USER_TURN>\n"
-        f"<CONVERSATION>{'\\n'.join(conversation_lines)}</CONVERSATION>\n"
+        f"<CONVERSATION>{conversation_block}</CONVERSATION>\n"
         f"<SEARCH_QUERY>{search_query}</SEARCH_QUERY>\n"
         f"<WEB_EVIDENCE>{search_context}</WEB_EVIDENCE>"
     )
