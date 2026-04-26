@@ -2,9 +2,14 @@ import { useRef, type ChangeEvent } from "react";
 import { FactCheckSidebar } from "@/components/sidepanel/FactCheckSidebar";
 import { TranscriptPanel } from "@/components/transcript/TranscriptPanel";
 import { Meter } from "@/components/Meter";
+import { InterviewModeToggle } from "@/components/InterviewModeToggle";
 import { useLiveKitRoom, type ContextMode } from "@/hooks/useLiveKitRoom";
 
 const Index = () => {
+  // 1. Capture the entire hook output to pass to the toggle
+  const liveKit = useLiveKitRoom();
+  
+  // 2. Destructure the specific values needed for the rest of the layout
   const {
     status: livekitStatus,
     error: livekitError,
@@ -16,7 +21,7 @@ const Index = () => {
     contextStatus,
     stageContext,
     clearContext,
-  } = useLiveKitRoom();
+  } = liveKit;
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -35,58 +40,72 @@ const Index = () => {
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <Meter flags={flags} activeSessionId={activeSessionId} />
+
+      {/* Main split view layout */}
       <main className="relative flex flex-1 flex-col lg:flex-row">
-      <div className="fixed right-4 top-20 z-50 flex flex-col gap-2 rounded-md border bg-card/95 px-3 py-3 text-sm shadow-lg">
-        <div className="flex items-center gap-2">
-          <span className="font-medium">LiveKit:</span>
-          <span className="font-mono text-xs">{livekitStatus}</span>
-          {isIdle ? (
-            <button
-              onClick={connect}
-              className="ml-auto rounded bg-primary px-2 py-1 text-primary-foreground hover:opacity-90"
-            >
-              Connect
-            </button>
-          ) : (
-            <button
-              onClick={disconnect}
-              disabled={livekitStatus === "connecting"}
-              className="ml-auto rounded bg-destructive px-2 py-1 text-destructive-foreground hover:opacity-90 disabled:opacity-50"
-            >
-              Disconnect
-            </button>
-          )}
+        
+        {/* Floating Controls Container */}
+        <div className="fixed right-4 top-20 z-50 flex flex-col gap-3 items-end">
+          
+          {/* Connection & Context Status Box */}
+          <div className="flex flex-col gap-2 rounded-md border bg-card/95 px-3 py-3 text-sm shadow-lg w-[320px]">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">LiveKit:</span>
+              <span className="font-mono text-xs">{livekitStatus}</span>
+              {isIdle ? (
+                <button
+                  onClick={connect}
+                  className="ml-auto rounded bg-primary px-2 py-1 text-primary-foreground hover:opacity-90"
+                >
+                  Connect
+                </button>
+              ) : (
+                <button
+                  onClick={disconnect}
+                  disabled={livekitStatus === "connecting"}
+                  className="ml-auto rounded bg-destructive px-2 py-1 text-destructive-foreground hover:opacity-90 disabled:opacity-50"
+                >
+                  Disconnect
+                </button>
+              )}
+            </div>
+
+            {livekitError ? (
+              <span className="text-destructive">{livekitError}</span>
+            ) : null}
+
+            {/* Context upload — only visible before connect */}
+            {isIdle && contextStatus.phase !== "ready" && (
+              <ContextStagePanel
+                contextStatus={contextStatus}
+                fileInputRef={fileInputRef}
+                onPickGospel={(e) => handleFileChange(e, "gospel")}
+                onPickNuanced={(e) => handleFileChange(e, "nuanced")}
+                onClear={clearContext}
+              />
+            )}
+
+            {/* Live status during/after upload. */}
+            {!isIdle && contextStatus.phase !== "none" && (
+              <ContextStatusBadge contextStatus={contextStatus} />
+            )}
+
+            {contextBusy && (
+              <p className="text-xs text-muted-foreground">
+                Mic stays muted until vetting finishes.
+              </p>
+            )}
+          </div>
+
+          {/* Interview Mode Toggle Box */}
+          <div className="shadow-lg rounded-md bg-white w-[320px] overflow-hidden">
+            <InterviewModeToggle liveKit={liveKit} />
+          </div>
+
         </div>
 
-        {livekitError ? (
-          <span className="text-destructive">{livekitError}</span>
-        ) : null}
-
-        {/* Context upload — only visible before connect (Q7). */}
-        {isIdle && contextStatus.phase !== "ready" && (
-          <ContextStagePanel
-            contextStatus={contextStatus}
-            fileInputRef={fileInputRef}
-            onPickGospel={(e) => handleFileChange(e, "gospel")}
-            onPickNuanced={(e) => handleFileChange(e, "nuanced")}
-            onClear={clearContext}
-          />
-        )}
-
-        {/* Live status during/after upload. */}
-        {!isIdle && contextStatus.phase !== "none" && (
-          <ContextStatusBadge contextStatus={contextStatus} />
-        )}
-
-        {contextBusy && (
-          <p className="text-xs text-muted-foreground">
-            Mic stays muted until vetting finishes.
-          </p>
-        )}
-      </div>
-
-      <TranscriptPanel sessions={sessions} flags={flags} isLive={livekitStatus === "connected"} />
-      <FactCheckSidebar flags={flags} />
+        <TranscriptPanel sessions={sessions} flags={flags} isLive={livekitStatus === "connected"} />
+        <FactCheckSidebar flags={flags} />
       </main>
     </div>
   );
