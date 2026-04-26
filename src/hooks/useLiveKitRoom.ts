@@ -100,14 +100,16 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
 
   useEffect(() => {
     modeRef.current = mode;
-    if (mode === "analysis") {
-      setDebateTurns([]);
-      setDebateScores([]);
-      setDebateFinalScore(null);
-      return;
+    if (mode === "debate") {
+      setFlags([]);
     }
-    setFlags([]);
   }, [mode]);
+
+  const clearDebate = useCallback(() => {
+    setDebateTurns([]);
+    setDebateScores([]);
+    setDebateFinalScore(null);
+  }, []);
 
   useEffect(() => {
     void publishAppMode(mode);
@@ -302,6 +304,12 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
         identity: participant.identity,
         kind: participant.kind,
       });
+
+      if (participant.kind === ParticipantKind.AGENT) {
+        // Ensure backend receives the current mode even if the first control
+        // publish happened before the agent participant was fully active.
+        void publishAppMode(modeRef.current);
+      }
     });
 
     room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
@@ -328,6 +336,8 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
     );
     if (!agentParticipant) {
       console.warn("[livekit] connected, but no agent participant has joined yet");
+    } else {
+      void publishAppMode(modeRef.current);
     }
     roomRef.current = room;
     console.log("[livekit] room established as", room.localParticipant.identity);
@@ -380,6 +390,18 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
     setStatus("idle");
   }, []);
 
+  const muteMicrophone = useCallback(async () => {
+    if (!roomRef.current) return;
+    await roomRef.current.localParticipant.setMicrophoneEnabled(false);
+    console.log("[livekit] microphone disabled");
+  }, []);
+
+  const unmuteMicrophone = useCallback(async () => {
+    if (!roomRef.current) return;
+    await roomRef.current.localParticipant.setMicrophoneEnabled(true);
+    console.log("[livekit] microphone enabled");
+  }, []);
+
   // Cleanup on unmount so HMR / page nav doesn't leak rooms.
   useEffect(() => {
     return () => {
@@ -396,7 +418,10 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
     debateTurns,
     debateScores,
     debateFinalScore,
+    clearDebate,
     connect,
     disconnect,
+    muteMicrophone,
+    unmuteMicrophone,
   };
 }

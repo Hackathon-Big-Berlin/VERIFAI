@@ -200,9 +200,20 @@ async def generate_debate_reply(
             model=GEMINI_MODEL_NAME,
             contents=prompt,
         )
-        raw = response.text if response and response.text else "{}"
-        parsed = json.loads(_clean_json_response(raw))
-        return str(parsed.get("response_text", "")).strip()
+        raw = response.text if response and response.text else ""
+        cleaned = _clean_json_response(raw)
+
+        # Preferred: structured JSON payload with response_text.
+        try:
+            parsed = json.loads(cleaned)
+            text = str(parsed.get("response_text", "")).strip()
+            if text:
+                return text
+        except json.JSONDecodeError:
+            # Fallback: model returned plain text; use it directly.
+            pass
+
+        return cleaned.strip()
     except Exception:
         logger.exception("Failed to generate debate chat reply")
         return ""

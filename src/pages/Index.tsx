@@ -1,13 +1,15 @@
 import { useState } from "react";
-import { DebateCoachSidebar } from "@/components/sidepanel/DebateCoachSidebar";
+import { DebateChatPanel } from "@/components/debate/DebateChatPanel";
 import { FactCheckSidebar } from "@/components/sidepanel/FactCheckSidebar";
 import { TranscriptPanel } from "@/components/transcript/TranscriptPanel";
 import { useLiveKitRoom } from "@/hooks/useLiveKitRoom";
 
 type AppMode = "analysis" | "debate";
+type DebateStage = "active" | "stopped";
 
 const Index = () => {
   const [mode, setMode] = useState<AppMode>("analysis");
+  const [debateStage, setDebateStage] = useState<DebateStage>("active");
 
   
   // LiveKit connection — browser mic → agent (Deepgram STT) → data channel → these state vars.
@@ -17,11 +19,42 @@ const Index = () => {
     sessions,
     flags, // Extracting our live backend flags directly from the hook
     debateTurns,
-    debateScores,
-    debateFinalScore,
+    clearDebate,
     connect,
     disconnect,
-  } = useLiveKitRoom(mode);
+    muteMicrophone,
+    unmuteMicrophone,
+  } = useLiveKitRoom(mode === "debate" && debateStage === "active" ? "debate" : "analysis");
+
+  const enterAnalysisMode = () => {
+    setMode("analysis");
+    setDebateStage("active");
+  };
+
+  const enterDebateMode = () => {
+    setMode("debate");
+    setDebateStage("active");
+    clearDebate();
+    void unmuteMicrophone();
+  };
+
+  const stopDebate = async () => {
+    setDebateStage("stopped");
+    await muteMicrophone();
+  };
+
+  const latestSession = sessions.length > 0 ? sessions[sessions.length - 1] : null;
+  const draftText = latestSession
+    ? `${latestSession.text}${
+        latestSession.pendingText ? `${latestSession.text ? " " : ""}${latestSession.pendingText}` : ""
+      }`.trim()
+    : "";
+  const latestUserTurnText = [...debateTurns]
+    .reverse()
+    .find((turn) => turn.role === "user")
+    ?.text.trim() ?? "";
+  const liveUserDraft =
+    debateStage === "active" && draftText && draftText !== latestUserTurnText ? draftText : "";
 
 
   return (
@@ -33,13 +66,13 @@ const Index = () => {
         <div className="mx-1 h-4 w-px bg-border" />
         <span className="font-medium">Mode:</span>
         <button
-          onClick={() => setMode("analysis")}
+          onClick={enterAnalysisMode}
           className={`rounded px-2 py-1 ${mode === "analysis" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"}`}
         >
           Analysis
         </button>
         <button
-          onClick={() => setMode("debate")}
+          onClick={enterDebateMode}
           className={`rounded px-2 py-1 ${mode === "debate" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"}`}
         >
           Debate coach
@@ -62,15 +95,18 @@ const Index = () => {
         )}
         {livekitError ? <span className="text-destructive">{livekitError}</span> : null}
       </div>
-      <TranscriptPanel sessions={sessions} flags={flags} isLive={livekitStatus === "connected"} />
-
       {mode === "analysis" ? (
-        <FactCheckSidebar flags={flags} />
+        <>
+          <TranscriptPanel sessions={sessions} flags={flags} isLive={livekitStatus === "connected"} />
+          <FactCheckSidebar flags={flags} />
+        </>
       ) : (
-        <DebateCoachSidebar
+        <DebateChatPanel
           turns={debateTurns}
-          scores={debateScores}
-          finalScore={debateFinalScore}
+          liveUserDraft={liveUserDraft}
+          isLive={livekitStatus === "connected" && debateStage === "active"}
+          isStopped={debateStage === "stopped"}
+          onStop={stopDebate}
         />
       )}
     </main>
