@@ -70,6 +70,8 @@ const LIVEKIT_TOKEN = import.meta.env.VITE_LIVEKIT_TOKEN as string | undefined;
 // cycle gets its own block; older blocks are preserved so the UI can stack them.
 export function useLiveKitRoom(mode: AppMode = "analysis") {
   const roomRef = useRef<Room | null>(null);
+  const audioContainerRef = useRef<HTMLDivElement | null>(null);
+  const audioElementsRef = useRef<Map<string, HTMLMediaElement>>(new Map());
   const modeRef = useRef<AppMode>(mode);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +80,41 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
   const [debateTurns, setDebateTurns] = useState<DebateTurn[]>([]);
   const [debateScores, setDebateScores] = useState<DebateTurnScore[]>([]);
   const [debateFinalScore, setDebateFinalScore] = useState<DebateFinalScore | null>(null);
+
+  const ensureAudioContainer = useCallback((): HTMLDivElement | null => {
+    if (typeof document === "undefined") return null;
+    if (audioContainerRef.current) return audioContainerRef.current;
+
+    const container = document.createElement("div");
+    container.id = "livekit-remote-audio";
+    container.setAttribute("aria-hidden", "true");
+    container.style.position = "fixed";
+    container.style.width = "1px";
+    container.style.height = "1px";
+    container.style.overflow = "hidden";
+    container.style.opacity = "0";
+    container.style.pointerEvents = "none";
+    document.body.appendChild(container);
+    audioContainerRef.current = container;
+    return container;
+  }, []);
+
+  const cleanupRemoteAudio = useCallback(() => {
+    audioElementsRef.current.forEach((element) => {
+      try {
+        element.pause();
+      } catch {
+        // no-op
+      }
+      if (element.parentElement) element.parentElement.removeChild(element);
+    });
+    audioElementsRef.current.clear();
+
+    if (audioContainerRef.current?.parentElement) {
+      audioContainerRef.current.parentElement.removeChild(audioContainerRef.current);
+    }
+    audioContainerRef.current = null;
+  }, []);
 
   const publishAppMode = useCallback(async (nextMode: AppMode) => {
     const room = roomRef.current;
@@ -333,6 +370,32 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
         source: publication.source,
         trackKind: track.kind,
       });
+
+      if (track.kind !== "audio") return;
+
+      const container = ensureAudioContainer();
+      if (!container) return;
+
+      const key = publication.trackSid;
+      if (audioElementsRef.current.has(key)) return;
+
+      const mediaElement = track.attach();
+      mediaElement.autoplay = true;
+      mediaElement.playsInline = true;
+      container.appendChild(mediaElement);
+      audioElementsRef.current.set(key, mediaElement);
+    });
+
+    room.on(RoomEvent.TrackUnsubscribed, (track, publication) => {
+      if (track.kind !== "audio") return;
+
+      const key = publication.trackSid;
+      const existing = audioElementsRef.current.get(key);
+      if (!existing) return;
+
+      track.detach(existing);
+      if (existing.parentElement) existing.parentElement.removeChild(existing);
+      audioElementsRef.current.delete(key);
     });
 
     // The room can drop unexpectedly (network blip, server kick). When that
@@ -340,6 +403,7 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
     room.on(RoomEvent.Disconnected, () => {
       console.log("[livekit] room disconnected");
       roomRef.current = null;
+      cleanupRemoteAudio();
       setStatus("idle");
     });
 
@@ -356,7 +420,7 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
     roomRef.current = room;
     console.log("[livekit] room established as", room.localParticipant.identity);
     return room;
-  }, []);
+  }, [cleanupRemoteAudio, ensureAudioContainer, publishAppMode]);
 
   const connect = useCallback(async () => {
     console.log("[livekit] connect requested");
@@ -421,8 +485,9 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
     return () => {
       roomRef.current?.disconnect();
       roomRef.current = null;
+      cleanupRemoteAudio();
     };
-  }, []);
+  }, [cleanupRemoteAudio]);
 
   return {
     status,

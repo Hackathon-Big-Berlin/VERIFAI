@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from dotenv import load_dotenv
+from livekit import rtc
 from livekit.agents import (
     Agent,
     AgentServer,
@@ -15,7 +16,7 @@ from livekit.agents import (
     inference,
     room_io,
 )
-from livekit.plugins import ai_coustics, silero
+from livekit.plugins import ai_coustics, gradium, silero
 
 from buffer import TranscriptBuffer
 from debate_coach import generate_debate_reply
@@ -24,6 +25,7 @@ from fact_checker import fact_check_sentence
 logger = logging.getLogger("agent")
 ENABLE_DEBATE_COACH = os.getenv("ENABLE_DEBATE_COACH", "1") == "1"
 DEBATE_SILENCE_SECONDS = 7
+GRADIUM_API_KEY_ENV = "GRADIUM_API_KEY"
 
 
 def configure_logging() -> None:
@@ -49,6 +51,20 @@ async def my_agent(ctx: JobContext):
     session = AgentSession(
         stt=inference.STT(model="deepgram/nova-3", language="multi"),
     )
+
+    gradium_api_key = os.getenv(GRADIUM_API_KEY_ENV)
+    if not gradium_api_key:
+        logger.warning(
+            "[%s] missing; Gradium TTS may fail to initialize",
+            GRADIUM_API_KEY_ENV,
+        )
+
+    tts = gradium.TTS()
+    audio_source = rtc.AudioSource(
+        sample_rate=tts.sample_rate,
+        num_channels=tts.num_channels,
+    )
+    audio_track = rtc.LocalAudioTrack.create_audio_track("debate_tts", audio_source)
 
     pending_publishes: set[asyncio.Task] = set()
 
@@ -149,6 +165,17 @@ async def my_agent(ctx: JobContext):
 
         await ctx.room.local_participant.publish_data(payload, reliable=True, topic="debate")
 
+    async def speak_debate_turn(text: str):
+        if not text.strip():
+            return
+        try:
+            async for audio_event in tts.synthesize(text):
+                await audio_source.capture_frame(audio_event.frame)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[debate] failed speaking model turn")
+
     async def maybe_respond_to_debate_turn():
         nonlocal debate_topic
 
@@ -199,6 +226,8 @@ async def my_agent(ctx: JobContext):
                 await publish_debate_turn("model", model_text)
             except Exception:
                 logger.exception("[debate] failed publishing model turn")
+
+            await speak_debate_turn(model_text)
 
     def schedule_debate_silence_timer():
         nonlocal debate_silence_task
@@ -306,6 +335,9 @@ async def my_agent(ctx: JobContext):
 
     try:
         await ctx.connect()
+
+        options = rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
+        await ctx.room.local_participant.publish_track(audio_track, options)
 
         await session.start(
             agent=Agent(instructions="Transcribe user speech. Do not respond."),
