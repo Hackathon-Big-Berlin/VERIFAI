@@ -13,6 +13,9 @@ const Index = () => {
   const [mode, setMode] = useState<AppMode>("analysis");
   const [debateStage, setDebateStage] = useState<DebateStage>("active");
 
+  // Capture the full hook return object so we can pass it to the toggle
+  const liveKitRoom = useLiveKitRoom(mode === "debate" && debateStage === "active" ? "debate" : "analysis");
+  
   const {
     status: livekitStatus,
     error: livekitError,
@@ -24,7 +27,7 @@ const Index = () => {
     disconnect,
     muteMicrophone,
     unmuteMicrophone,
-  } = useLiveKitRoom(mode === "debate" && debateStage === "active" ? "debate" : "analysis");
+  } = liveKitRoom;
 
   const enterAnalysisMode = () => {
     setMode("analysis");
@@ -108,9 +111,9 @@ const Index = () => {
 
         <div className="mx-2 h-5 w-px bg-white/10 flex-shrink-0" />
 
-        {/* Interview Mode Toggle Integration */}
+        {/* Fixed: Passing the liveKit object down to the toggle */}
         <div className="flex items-center flex-shrink-0">
-          <InterviewModeToggle />
+          <InterviewModeToggle liveKit={liveKitRoom} />
         </div>
 
         <div className="mx-2 h-5 w-px bg-white/10 flex-shrink-0" />
