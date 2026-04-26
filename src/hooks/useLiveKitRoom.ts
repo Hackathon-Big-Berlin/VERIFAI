@@ -34,6 +34,8 @@ type DataChannelMessage =
       strongClaims: Array<{ claim: string; strength: "strong"; reason: string }>;
       weakClaims: Array<{ claim: string; strength: "weak"; reason: string }>;
       coachingSuggestion: string;
+      logicalFallacies?: Array<{ fallacy: string; evidence?: string; reason?: string }>;
+      argumentImpact?: string;
     }
   | {
       type: "debate_final_score";
@@ -46,6 +48,8 @@ type DataChannelMessage =
         responsiveness: number;
       };
       summary: string;
+      topWeaknesses?: string[];
+      nextSteps?: string[];
     }
   | Record<string, unknown>;
 

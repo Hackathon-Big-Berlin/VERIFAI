@@ -28,6 +28,8 @@ const Index = () => {
     flags,
     activeSessionId,
     debateTurns,
+    debateScores,
+    debateFinalScore,
     clearDebate,
     connect,
     disconnect,
@@ -157,6 +159,8 @@ const Index = () => {
         {isDebate ? (
           <DebateChatPanel
             turns={debateTurns}
+            scores={debateScores}
+            finalScore={debateFinalScore}
             liveUserDraft={liveUserDraft}
             isLive={livekitStatus === "connected" && debateStage === "active"}
             isStopped={debateStage === "stopped"}
