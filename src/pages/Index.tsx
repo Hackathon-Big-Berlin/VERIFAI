@@ -1,42 +1,53 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { DebateChatPanel } from "@/components/debate/DebateChatPanel";
 import { FactCheckSidebar } from "@/components/sidepanel/FactCheckSidebar";
+import { Meter } from "@/components/Meter";
 import { TranscriptPanel } from "@/components/transcript/TranscriptPanel";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useLiveKitRoom } from "@/hooks/useLiveKitRoom";
 
-type AppMode = "analysis" | "debate";
+type AppMode = "normal" | "interview" | "debate";
+type AudioMode = "studio" | "noise" | "group";
 type DebateStage = "active" | "stopped";
 
 const Index = () => {
-  const [mode, setMode] = useState<AppMode>("analysis");
+  const [mode, setMode] = useState<AppMode>("normal");
+  const [audioMode, setAudioMode] = useState<AudioMode>("studio");
   const [debateStage, setDebateStage] = useState<DebateStage>("active");
 
-  
-  // LiveKit connection — browser mic → agent (Deepgram STT) → data channel → these state vars.
   const {
     status: livekitStatus,
     error: livekitError,
     sessions,
-    flags, // Extracting our live backend flags directly from the hook
+    flags,
+    activeSessionId,
     debateTurns,
     clearDebate,
     connect,
     disconnect,
     muteMicrophone,
     unmuteMicrophone,
-  } = useLiveKitRoom(mode === "debate" && debateStage === "active" ? "debate" : "analysis");
+  } = useLiveKitRoom(
+    mode === "debate" && debateStage === "active" ? "debate" : mode === "interview" ? "interview" : "normal",
+  );
 
-  const enterAnalysisMode = () => {
-    setMode("analysis");
-    setDebateStage("active");
-    setDebateConsumedText("");
-  };
+  const isIdle = livekitStatus === "idle" || livekitStatus === "error";
+  const isDebate = mode === "debate";
 
-  const enterDebateMode = () => {
-    setMode("debate");
+  const handleModeChange = (next: AppMode) => {
+    if (next === mode) return;
+    setMode(next);
     setDebateStage("active");
-    clearDebate();
-    void unmuteMicrophone();
+    if (next === "debate") {
+      clearDebate();
+      void unmuteMicrophone();
+    }
   };
 
   const stopDebate = async () => {
@@ -45,82 +56,128 @@ const Index = () => {
   };
 
   const latestSession = sessions.length > 0 ? sessions[sessions.length - 1] : null;
-  
-  // Match analysis mode exactly: accumulate text + pendingText from current session.
-  // When a user turn is committed, the backend publishes debate_turn("user", ...),
-  // which triggers useLiveKitRoom to create a fresh session, so next draft starts empty.
   const draftText = latestSession
     ? `${latestSession.text}${
-        latestSession.pendingText ? `${latestSession.text ? " " : ""}${latestSession.pendingText}` : ""
+        latestSession.pendingText
+          ? `${latestSession.text ? " " : ""}${latestSession.pendingText}`
+          : ""
       }`.trim()
     : "";
-
-  const liveUserDraft =
-    debateStage === "active" ? draftText : "";
-
+  const liveUserDraft = debateStage === "active" ? draftText : "";
 
   return (
-    <main className="flex min-h-screen flex-col bg-background text-foreground lg:flex-row">
-      {/* Floating dev control: connect the browser mic to the LiveKit room. */}
-      <div className="fixed right-4 top-4 z-50 flex items-center gap-2 rounded-md border bg-card/90 px-3 py-2 text-sm shadow">
-        <span className="font-medium">LiveKit:</span>
-        <span>{livekitStatus}</span>
-        <div className="mx-1 h-4 w-px bg-border" />
-        <span className="font-medium">Mode:</span>
-        <button
-          onClick={enterAnalysisMode}
-          className={`rounded px-2 py-1 ${mode === "analysis" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"}`}
-        >
-          Analysis
-        </button>
-        <button
-          onClick={enterDebateMode}
-          className={`rounded px-2 py-1 ${mode === "debate" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"}`}
-        >
-          Debate coach
-        </button>
-        {mode === "debate" ? (
-          <button
-            onClick={stopDebate}
-            disabled={debateStage === "stopped"}
-            className="rounded bg-destructive px-2 py-1 text-destructive-foreground hover:opacity-90 disabled:opacity-50"
-          >
-            Stop debate
-          </button>
-        ) : null}
-        {livekitStatus === "idle" || livekitStatus === "error" ? (
-          <button
-            onClick={connect}
-            className="rounded bg-primary px-2 py-1 text-primary-foreground hover:opacity-90"
-          >
-            Connect
-          </button>
+    <div className="flex min-h-screen flex-col bg-background text-foreground">
+      <Meter
+        flags={flags}
+        activeSessionId={activeSessionId}
+        rightSlot={
+          <div className="flex flex-col gap-2 text-sm">
+            <div className="flex items-start gap-3 flex-wrap">
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                  Mode
+                </span>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex w-28 items-center justify-between gap-1 rounded-sm border border-border bg-primary px-2.5 py-1.5 font-mono text-xs uppercase tracking-wider text-primary-foreground hover:bg-primary/90 transition-colors"
+                    >
+                      {mode}
+                      <ChevronDown className="h-3 w-3" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    {(["normal", "interview", "debate"] as const).map((option) => (
+                      <DropdownMenuItem
+                        key={option}
+                        onSelect={() => handleModeChange(option)}
+                        className="font-mono text-xs uppercase tracking-wider"
+                      >
+                        {option}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                  Audio
+                </span>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex w-28 items-center justify-between gap-1 rounded-sm border border-border bg-primary px-2.5 py-1.5 font-mono text-xs uppercase tracking-wider text-primary-foreground hover:bg-primary/90 transition-colors"
+                    >
+                      {audioMode}
+                      <ChevronDown className="h-3 w-3" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    {(["studio", "noise", "group"] as const).map((option) => (
+                      <DropdownMenuItem
+                        key={option}
+                        onSelect={() => setAudioMode(option)}
+                        className="font-mono text-xs uppercase tracking-wider"
+                      >
+                        {option}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+
+              {isDebate ? (
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                    Debate
+                  </span>
+                  <button
+                    type="button"
+                    onClick={stopDebate}
+                    disabled={debateStage === "stopped"}
+                    className="inline-flex w-28 items-center justify-center rounded-sm border border-border bg-destructive px-2.5 py-1.5 font-mono text-xs uppercase tracking-wider text-destructive-foreground hover:opacity-90 disabled:opacity-50"
+                  >
+                    {debateStage === "stopped" ? "Stopped" : "Stop"}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
+            {livekitError ? (
+              <span className="text-destructive">{livekitError}</span>
+            ) : null}
+          </div>
+        }
+      />
+
+      <main className="relative flex flex-1 flex-col lg:flex-row">
+        {isDebate ? (
+          <DebateChatPanel
+            turns={debateTurns}
+            liveUserDraft={liveUserDraft}
+            isLive={livekitStatus === "connected" && debateStage === "active"}
+            isStopped={debateStage === "stopped"}
+            onStop={stopDebate}
+          />
         ) : (
-          <button
-            onClick={disconnect}
-            className="rounded bg-destructive px-2 py-1 text-destructive-foreground hover:opacity-90"
-            disabled={livekitStatus === "connecting"}
-          >
-            Disconnect
-          </button>
+          <>
+            <TranscriptPanel
+              sessions={sessions}
+              flags={flags}
+              isLive={livekitStatus === "connected"}
+              isIdle={isIdle}
+              isConnecting={livekitStatus === "connecting"}
+              onConnect={connect}
+              onDisconnect={disconnect}
+            />
+            <FactCheckSidebar flags={flags} />
+          </>
         )}
-        {livekitError ? <span className="text-destructive">{livekitError}</span> : null}
-      </div>
-      {mode === "analysis" ? (
-        <>
-          <TranscriptPanel sessions={sessions} flags={flags} isLive={livekitStatus === "connected"} />
-          <FactCheckSidebar flags={flags} />
-        </>
-      ) : (
-        <DebateChatPanel
-          turns={debateTurns}
-          liveUserDraft={liveUserDraft}
-          isLive={livekitStatus === "connected" && debateStage === "active"}
-          isStopped={debateStage === "stopped"}
-          onStop={stopDebate}
-        />
-      )}
-    </main>
+      </main>
+    </div>
   );
 };
 

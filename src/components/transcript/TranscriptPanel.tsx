@@ -1,6 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { Mic, MicOff } from "lucide-react";
 import type { FactCheckFlag, FactCheckVerdict, TranscriptSession } from "@/lib/types";
 
 type TranscriptPanelProps = {
@@ -9,6 +10,11 @@ type TranscriptPanelProps = {
   // Whether the most recent session is still receiving transcripts. Drives
   // the "Listening" indicator and styles the active block.
   isLive: boolean;
+  // Connection controls rendered as a circular action at the bottom-center.
+  isIdle?: boolean;
+  isConnecting?: boolean;
+  onConnect?: () => void;
+  onDisconnect?: () => void;
 };
 
 const verdictHighlight: Record<FactCheckVerdict, string> = {
@@ -51,7 +57,6 @@ function renderHighlightedTranscript(text: string, flags: FactCheckFlag[]): Reac
 
   matches.sort((a, b) => a.start - b.start);
 
-  // Drop matches that overlap an earlier match — pick the first one and skip the rest.
   const cleaned: Match[] = [];
   let cursor = 0;
   for (const m of matches) {
@@ -80,7 +85,16 @@ function renderHighlightedTranscript(text: string, flags: FactCheckFlag[]): Reac
   return nodes;
 }
 
-export function TranscriptPanel({ sessions, flags, isLive }: TranscriptPanelProps) {
+export function TranscriptPanel({
+  sessions,
+  flags,
+  isLive,
+  isIdle,
+  isConnecting,
+  onConnect,
+  onDisconnect,
+}: TranscriptPanelProps) {
+  const showConnect = typeof onConnect === "function" && typeof onDisconnect === "function";
   return (
     <section className="flex min-h-0 flex-1 flex-col border-b border-border bg-background lg:border-b-0 lg:border-r">
       <header className="flex items-center justify-between border-b border-border px-4 py-4 md:px-6">
@@ -106,10 +120,6 @@ export function TranscriptPanel({ sessions, flags, isLive }: TranscriptPanelProp
               const isActive = isLive && index === sessions.length - 1;
               const hasPending = session.pendingText.length > 0;
               const hasAnyText = session.text.length > 0 || hasPending;
-              // Apply every flag to every session — the substring match
-              // naturally selects whichever session contains the claim text.
-              // Highlights persist after disconnect because they're driven by
-              // the flags array, not by `isActive`.
               const highlightedText = renderHighlightedTranscript(session.text, flags);
 
               return (
@@ -145,6 +155,31 @@ export function TranscriptPanel({ sessions, flags, isLive }: TranscriptPanelProp
           )}
         </div>
       </ScrollArea>
+
+      {showConnect ? (
+        <div className="flex items-center justify-center border-t border-border bg-background px-4 py-4">
+          {isIdle ? (
+            <button
+              type="button"
+              onClick={onConnect}
+              aria-label="Connect"
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            >
+              <Mic className="h-6 w-6" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onDisconnect}
+              disabled={isConnecting}
+              aria-label="Disconnect"
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-destructive text-destructive-foreground shadow-md transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-50"
+            >
+              <MicOff className="h-6 w-6" />
+            </button>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }
