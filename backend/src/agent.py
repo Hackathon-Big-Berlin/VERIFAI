@@ -24,6 +24,8 @@ from fact_checker import run_fact_check_pipeline
 logger = logging.getLogger("agent")
 MAX_CONTEXT_WORDS = 500
 ENABLE_DEBATE_COACH = os.getenv("ENABLE_DEBATE_COACH", "1") == "1"
+from buffer import TranscriptBuffer
+from fact_checker import fact_check_sentence
 
 
 def configure_logging() -> None:
@@ -53,10 +55,8 @@ async def my_agent(ctx: JobContext):
         stt=inference.STT(model="deepgram/nova-3", language="multi"),
     )
 
-    # TruWord delivery stream: forward every Deepgram transcript event to the
-    # LiveKit Data Channel as JSON so the frontend can render it (and later we
-    # can layer in fact-check verdicts on the same channel under a different topic).
-    # Keep strong refs to in-flight publish tasks so they aren't GC'd before completing.
+    # Strong refs to in-flight transcript-publish tasks so they aren't GC'd
+    # mid-await (ruff RUF006).
     pending_publishes: set[asyncio.Task] = set()
     # Sliding context window for downstream Gemini prompting.
     # This is intentionally plain text for now and only includes finalized STT chunks.
@@ -67,6 +67,10 @@ async def my_agent(ctx: JobContext):
     fact_check_queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
     debate_queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
     debate_score_rows: list[dict[str, int]] = []
+    # Sentence buffer that emits complete sentences (with recent-sentence
+    # history for pronoun resolution) as STT finals arrive.
+    transcript_buffer = TranscriptBuffer()
+    sentence_version = 0
     # Dedup key = normalized claim (lowercased, stripped of punctuation/space).
     # Maps to the last verdict we published for that claim; we only re-publish
     # when the verdict changes, and the frontend replaces the existing card.
@@ -76,67 +80,62 @@ async def my_agent(ctx: JobContext):
     def normalize_claim(text: str) -> str:
         return text.lower().strip(" \t\r\n.,!?;:'\"`-")
 
-    # STEP 3 — run the pipeline and publish each successful, novel verdict
-    # to the data channel as topic="flag". Frontend's useLiveKitRoom hook
-    # picks these up and routes them into the side panel + transcript.
+    # Run the pipeline on each completed sentence and publish successful,
+    # novel verdicts to the data channel as topic="flag".
     async def fact_check_worker():
         while True:
-            version, context_snapshot = await fact_check_queue.get()
+            version, sentence, history = await fact_check_queue.get()
             try:
                 logger.info(
-                    "[worker] received version=%s snapshot=%r",
+                    "[worker] received version=%s sentence=%r history_len=%s",
                     version,
-                    context_snapshot[:120],
+                    sentence[:120],
+                    len(history),
                 )
-                logger.info("[worker] calling pipeline version=%s", version)
-                results = await run_fact_check_pipeline(context_snapshot)
+                result = await fact_check_sentence(sentence, history)
                 logger.info(
-                    "[worker] pipeline returned version=%s n_results=%s",
+                    "[worker] result version=%s status=%s verdict=%s",
                     version,
-                    len(results),
+                    result.get("status"),
+                    result.get("verdict"),
                 )
-                logger.info(
-                    "[worker] pipeline result version=%s:\n%s",
-                    version,
-                    json.dumps(results, indent=2),
-                )
+                logger.debug("[worker] full result version=%s: %s", version, json.dumps(result))
 
-                for result in results:
-                    if result.get("status") != "success":
-                        continue
-                    claim = result.get("claim", "")
-                    verdict = result.get("verdict", "")
-                    norm = normalize_claim(claim)
-                    if not norm:
-                        continue
-                    if published_verdicts.get(norm) == verdict:
-                        continue  # same claim, same verdict — already shown
-                    published_verdicts[norm] = verdict
+                if result.get("status") != "success":
+                    continue
+                claim = result.get("claim", "")
+                verdict = result.get("verdict", "")
+                norm = normalize_claim(claim)
+                if not norm:
+                    continue
+                if published_verdicts.get(norm) == verdict:
+                    continue  # same claim, same verdict — already shown
+                published_verdicts[norm] = verdict
 
-                    flag_payload = json.dumps(
-                        {
-                            "type": "flag",
-                            "claim": claim,
-                            "verdict": verdict,
-                            "reasoning": result.get("reasoning", ""),
-                            "sources": result.get("sources", []),
-                        }
-                    ).encode("utf-8")
+                flag_payload = json.dumps(
+                    {
+                        "type": "flag",
+                        "claim": claim,
+                        "verdict": verdict,
+                        "reasoning": result.get("reasoning", ""),
+                        "sources": result.get("sources", []),
+                    }
+                ).encode("utf-8")
 
-                    try:
-                        await ctx.room.local_participant.publish_data(
-                            flag_payload, reliable=True, topic="flag"
-                        )
-                        logger.info(
-                            "[worker] published flag verdict=%s claim=%r",
-                            verdict,
-                            claim[:80],
-                        )
-                    except Exception:
-                        logger.exception(
-                            "[worker] failed to publish flag claim=%r",
-                            claim[:80],
-                        )
+                try:
+                    await ctx.room.local_participant.publish_data(
+                        flag_payload, reliable=True, topic="flag"
+                    )
+                    logger.info(
+                        "[worker] published flag verdict=%s claim=%r",
+                        verdict,
+                        claim[:80],
+                    )
+                except Exception:
+                    logger.exception(
+                        "[worker] failed to publish flag claim=%r",
+                        claim[:80],
+                    )
             except asyncio.CancelledError as e:
                 # Diagnostic: a single bad Gemini call shouldn't kill the
                 # worker forever. Log the underlying cause and keep looping
@@ -270,25 +269,27 @@ async def my_agent(ctx: JobContext):
     debate_worker_task = asyncio.create_task(debate_worker()) if ENABLE_DEBATE_COACH else None
     ctx.room.on("data_received", handle_control_message)
 
-    # STEP 2 self-test: a checkable false claim so we can see the full
-    # pipeline (claim extraction → search → verdict) light up on dispatch
-    # without depending on the user speaking.
-    fact_check_queue.put_nowait((-1, "The capital of France is Berlin."))
+    # Self-test: a checkable false claim so we can see the pipeline light up
+    # on dispatch without depending on the user speaking. History is empty
+    # because there's no prior context.
+    fact_check_queue.put_nowait((-1, "The capital of France is Berlin.", ""))
 
     def forward_transcript_to_data_channel(event):
-        nonlocal context_window, context_version
+        nonlocal sentence_version
 
         if event.is_final and event.transcript and event.transcript.strip():
-            user_turn_text = event.transcript.strip()
-            # Add new words and automatically evict oldest words once maxlen is reached.
-            context_words.extend(user_turn_text.split())
-            context_window = " ".join(context_words)
-            context_version += 1
-            # N=1: run fact-check for every new final transcript chunk.
-            fact_check_queue.put_nowait((context_version, context_window))
-            if ENABLE_DEBATE_COACH and app_mode == "debate":
-                debate_queue.put_nowait((context_version, user_turn_text, context_window))
-            logger.debug("updated context window words=%s", len(context_words))
+            # Feed the buffer; it returns any complete sentences with their
+            # recent-sentence history. Often zero (chunk didn't end with .!?)
+            # or one; occasionally more if the chunk contains multiple sentences.
+            for sentence, history in transcript_buffer.process_chunk(event.transcript):
+                sentence_version += 1
+                fact_check_queue.put_nowait((sentence_version, sentence, history))
+                logger.debug(
+                    "[buffer] queued sentence v=%s text=%r history_len=%s",
+                    sentence_version,
+                    sentence[:80],
+                    len(history),
+                )
 
         # session.on(...) callbacks are sync, but publish_data is async.
         # Schedule the publish on the running event loop so we don't block.
