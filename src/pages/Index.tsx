@@ -1,7 +1,6 @@
 import { FactCheckSidebar } from "@/components/sidepanel/FactCheckSidebar";
 import { TranscriptPanel } from "@/components/transcript/TranscriptPanel";
 // Deletion: Removed import { getMockFactCheckFlags } from "@/lib/mockdata/fact-checks";
-import type { FactCheckFlag } from "@/lib/types";
 import { useLiveKitRoom } from "@/hooks/useLiveKitRoom";
 
 
@@ -14,6 +13,9 @@ const Index = () => {
     error: livekitError,
     sessions,
     flags, // Extracting our live backend flags directly from the hook
+    debateTurns,
+    debateScores,
+    debateFinalScore,
     connect,
     disconnect,
   } = useLiveKitRoom();
@@ -42,6 +44,12 @@ const Index = () => {
           </button>
         )}
         {livekitError ? <span className="text-destructive">{livekitError}</span> : null}
+      </div>
+      <div className="fixed bottom-4 right-4 z-40 max-w-sm rounded-md border bg-card/90 p-3 text-xs shadow">
+        <p className="font-semibold">Debate coach</p>
+        <p>Turns: {debateTurns.length}</p>
+        <p>Scored turns: {debateScores.length}</p>
+        <p>Final score: {debateFinalScore ? debateFinalScore.overall : "pending"}</p>
       </div>
       <TranscriptPanel sessions={sessions} flags={flags} isLive={livekitStatus === "connected"} />
       
