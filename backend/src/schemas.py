@@ -10,23 +10,8 @@ Two roles:
 from typing import List, TypedDict
 
 
-# Stage 1: claim extraction. Gemini returns a flat array of verbatim claim
-# substrings pulled from the speech. The frontend doesn't see this directly —
-# it's an intermediate.
-CLAIMS_SCHEMA = {
-    "type": "ARRAY",
-    "items": {
-        "type": "STRING",
-        "description": (
-            "A factual claim quoted verbatim, character-for-character, from the "
-            "input speech. Must be a direct substring of the input."
-        ),
-    },
-}
-
-
-# Stage 2: per-claim verdict. Schema-enforced so we never need to clean
-# markdown fences or recover from malformed JSON.
+# Per-claim verdict. Schema-enforced so we never need to clean markdown
+# fences or recover from malformed JSON.
 VERDICT_SCHEMA = {
     "type": "OBJECT",
     "properties": {
