@@ -97,17 +97,18 @@ export function FactCheckCard({ flag }: FactCheckCardProps) {
       </p>
 
       {reasoningDone && flag.sources && flag.sources.length > 0 && (
-        <ul className="mt-4 flex flex-col gap-1.5">
+        <ul className="mt-4 flex flex-wrap gap-1.5">
           {flag.sources.slice(0, 3).map((url, i) => (
             <li key={`${url}-${i}`}>
               <a
                 href={url}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex max-w-full items-center gap-1.5 text-sm font-medium text-primary underline-offset-4 hover:underline"
+                title={url}
+                className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background px-2 py-1 text-xs font-medium text-foreground transition-colors hover:border-primary/50 hover:text-primary"
               >
-                <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
-                <span className="truncate">{sourceLabel(url)}</span>
+                <ExternalLink className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+                <span>{sourceLabel(url)}</span>
               </a>
             </li>
           ))}
