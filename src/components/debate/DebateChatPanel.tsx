@@ -1,23 +1,43 @@
 import { useEffect, useRef } from "react";
+import { Mic, MicOff } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { DebateTurn } from "@/lib/types";
+import type { DebateFinalScore, DebateTurn, DebateTurnScore } from "@/lib/types";
 
 type DebateChatPanelProps = {
   turns: DebateTurn[];
+  scores: DebateTurnScore[];
+  finalScore: DebateFinalScore | null;
   liveUserDraft: string;
   isLive: boolean;
   isStopped: boolean;
+  isIdle?: boolean;
+  isConnecting?: boolean;
+  onConnect?: () => void;
+  onDisconnect?: () => void;
   onStop: () => void;
 };
 
 export function DebateChatPanel({
   turns,
+  scores,
+  finalScore,
   liveUserDraft,
   isLive,
   isStopped,
+  isIdle,
+  isConnecting,
+  onConnect,
+  onDisconnect,
   onStop,
 }: DebateChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const showConnect = typeof onConnect === "function" && typeof onDisconnect === "function";
+  const allStrongClaims = scores.flatMap((s) => s.strongClaims ?? []);
+  const allWeakClaims = scores.flatMap((s) => s.weakClaims ?? []);
+  const allFallacies = scores.flatMap((s) => s.logicalFallacies ?? []);
+  const allSuggestions = scores
+    .map((s) => s.coachingSuggestion?.trim())
+    .filter((text): text is string => Boolean(text));
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
@@ -85,9 +105,120 @@ export function DebateChatPanel({
             </article>
           ) : null}
 
+          {isStopped ? (
+            <article className="rounded-lg border border-border bg-muted/20 p-4 text-sm leading-6 text-foreground">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+                Debate summary
+              </p>
+              {finalScore ? (
+                <div className="space-y-3">
+                  <p className="font-medium">Overall score: {finalScore.overall}/100</p>
+                  <p className="text-muted-foreground">{finalScore.summary}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Logic {finalScore.scores.logicalConsistency} | Evidence {finalScore.scores.evidenceQuality} |
+                    Rebuttal {finalScore.scores.rebuttalEffectiveness} | Clarity {finalScore.scores.clarityStructure} |
+                    Responsiveness {finalScore.scores.responsiveness}
+                  </p>
+
+                  {allStrongClaims.length > 0 ? (
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+                        Strong points
+                      </p>
+                      <ul className="list-disc pl-5">
+                        {allStrongClaims.slice(0, 4).map((item, idx) => (
+                          <li key={`${item.claim}-${idx}`}>{item.claim}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {allWeakClaims.length > 0 ? (
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+                        Weak points
+                      </p>
+                      <ul className="list-disc pl-5">
+                        {allWeakClaims.slice(0, 4).map((item, idx) => (
+                          <li key={`${item.claim}-${idx}`}>{item.claim}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {allFallacies.length > 0 ? (
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+                        Logical fallacies
+                      </p>
+                      <ul className="list-disc pl-5">
+                        {allFallacies.slice(0, 4).map((item, idx) => (
+                          <li key={`${item.fallacy}-${idx}`}>{item.fallacy}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {allSuggestions.length > 0 ? (
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">
+                        Coaching tips
+                      </p>
+                      <ul className="list-disc pl-5">
+                        {allSuggestions.slice(0, 3).map((tip, idx) => (
+                          <li key={`${tip}-${idx}`}>{tip}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {finalScore.topWeaknesses && finalScore.topWeaknesses.length > 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      Top weaknesses: {finalScore.topWeaknesses.slice(0, 5).join(", ")}
+                    </p>
+                  ) : null}
+                  {finalScore.nextSteps && finalScore.nextSteps.length > 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      Next steps: {finalScore.nextSteps.slice(0, 3).join(" | ")}
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="text-muted-foreground">
+                  Computing post-debate analysis... keep this screen open for a few seconds.
+                </p>
+              )}
+            </article>
+          ) : null}
+
           <div ref={bottomRef} aria-hidden="true" />
         </div>
       </ScrollArea>
+
+      {showConnect ? (
+        <div className="flex items-center justify-center border-t border-border bg-background px-4 py-4">
+          {isIdle ? (
+            <button
+              type="button"
+              onClick={onConnect}
+              aria-label="Connect"
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            >
+              <Mic className="h-6 w-6" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onDisconnect}
+              disabled={isConnecting}
+              aria-label="Disconnect"
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-destructive text-destructive-foreground shadow-md transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-50"
+            >
+              <MicOff className="h-6 w-6" />
+            </button>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -61,10 +61,18 @@ export interface DebateTurnScore {
   strongClaims: DebateClaimAnnotation[];
   weakClaims: DebateClaimAnnotation[];
   coachingSuggestion: string;
+  logicalFallacies?: Array<{
+    fallacy: string;
+    evidence?: string;
+    reason?: string;
+  }>;
+  argumentImpact?: string;
 }
 
 export interface DebateFinalScore {
   overall: number;
   scores: DebateRubricScores;
   summary: string;
+  topWeaknesses?: string[];
+  nextSteps?: string[];
 }
