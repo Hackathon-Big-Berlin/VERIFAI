@@ -251,6 +251,20 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
               },
             ];
           });
+          
+          // When a user turn is committed, create a fresh session so the next
+          // draft starts empty and accumulates fresh transcripts.
+          if (debateTurn.role === "user") {
+            setSessions((previousSessions) => [
+              ...previousSessions,
+              {
+                id: newSessionId(),
+                startedAt: formatTimestamp(new Date()),
+                text: "",
+                pendingText: "",
+              },
+            ]);
+          }
           return;
         }
 

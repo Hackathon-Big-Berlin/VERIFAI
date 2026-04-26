@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DebateChatPanel } from "@/components/debate/DebateChatPanel";
 import { FactCheckSidebar } from "@/components/sidepanel/FactCheckSidebar";
 import { TranscriptPanel } from "@/components/transcript/TranscriptPanel";
@@ -29,6 +29,7 @@ const Index = () => {
   const enterAnalysisMode = () => {
     setMode("analysis");
     setDebateStage("active");
+    setDebateConsumedText("");
   };
 
   const enterDebateMode = () => {
@@ -44,17 +45,18 @@ const Index = () => {
   };
 
   const latestSession = sessions.length > 0 ? sessions[sessions.length - 1] : null;
+  
+  // Match analysis mode exactly: accumulate text + pendingText from current session.
+  // When a user turn is committed, the backend publishes debate_turn("user", ...),
+  // which triggers useLiveKitRoom to create a fresh session, so next draft starts empty.
   const draftText = latestSession
     ? `${latestSession.text}${
         latestSession.pendingText ? `${latestSession.text ? " " : ""}${latestSession.pendingText}` : ""
       }`.trim()
     : "";
-  const latestUserTurnText = [...debateTurns]
-    .reverse()
-    .find((turn) => turn.role === "user")
-    ?.text.trim() ?? "";
+
   const liveUserDraft =
-    debateStage === "active" && draftText && draftText !== latestUserTurnText ? draftText : "";
+    debateStage === "active" ? draftText : "";
 
 
   return (
@@ -77,6 +79,15 @@ const Index = () => {
         >
           Debate coach
         </button>
+        {mode === "debate" ? (
+          <button
+            onClick={stopDebate}
+            disabled={debateStage === "stopped"}
+            className="rounded bg-destructive px-2 py-1 text-destructive-foreground hover:opacity-90 disabled:opacity-50"
+          >
+            Stop debate
+          </button>
+        ) : null}
         {livekitStatus === "idle" || livekitStatus === "error" ? (
           <button
             onClick={connect}
