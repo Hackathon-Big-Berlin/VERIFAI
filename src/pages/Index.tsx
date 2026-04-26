@@ -13,12 +13,10 @@ import {
 import { useLiveKitRoom } from "@/hooks/useLiveKitRoom";
 
 type AppMode = "normal" | "interview" | "debate";
-type AudioMode = "studio" | "noise" | "group";
 type DebateStage = "active" | "stopped";
 
 const Index = () => {
   const [mode, setMode] = useState<AppMode>("normal");
-  const [audioMode, setAudioMode] = useState<AudioMode>("studio");
   const [debateStage, setDebateStage] = useState<DebateStage>("active");
 
   const {
@@ -101,33 +99,7 @@ const Index = () => {
                 </DropdownMenu>
               </div>
 
-              <div className="flex flex-col gap-1">
-                <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-                  Audio
-                </span>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      type="button"
-                      className="inline-flex w-28 items-center justify-between gap-1 rounded-sm border border-border bg-primary px-2.5 py-1.5 font-mono text-xs uppercase tracking-wider text-primary-foreground hover:bg-primary/90 transition-colors"
-                    >
-                      {audioMode}
-                      <ChevronDown className="h-3 w-3" />
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start">
-                    {(["studio", "noise", "group"] as const).map((option) => (
-                      <DropdownMenuItem
-                        key={option}
-                        onSelect={() => setAudioMode(option)}
-                        className="font-mono text-xs uppercase tracking-wider"
-                      >
-                        {option}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
+              
 
               {isDebate ? (
                 <div className="flex flex-col gap-1">
