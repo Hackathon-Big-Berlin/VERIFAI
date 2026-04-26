@@ -80,12 +80,16 @@ const LIVEKIT_TOKEN = import.meta.env.VITE_LIVEKIT_TOKEN as string | undefined;
 
 export function useLiveKitRoom() {
   const roomRef = useRef<Room | null>(null);
+  // Mirror activeSessionId into a ref so the data-channel callback (created
+  // once inside ensureRoomConnected) can read the current id without us
+  // re-binding the room handlers on every connect.
   const activeSessionIdRef = useRef<string | null>(null);
-  
+
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<TranscriptSession[]>([]);
   const [flags, setFlags] = useState<FactCheckFlag[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [contextStatus, setContextStatus] = useState<ContextStatus>({ phase: "none" });
 
   // The connect flow needs the latest contextStatus snapshot but doesn't want
@@ -313,10 +317,15 @@ export function useLiveKitRoom() {
       const room = await ensureRoomConnected();
       if (!room) return;
 
-      // Open a fresh transcript block for this Connect press.
+      // Single source of truth for "we just opened a new session". Tags
+      // every new flag (via activeSessionIdRef) and feeds Meter via the
+      // activeSessionId state.
+      const newId = newSessionId();
+      activeSessionIdRef.current = newId;
+      setActiveSessionId(newId);
       setSessions((prev) => [
         ...prev,
-        { id: newSessionId(), startedAt: formatTimestamp(new Date()), text: "", pendingText: "" },
+        { id: newId, startedAt: formatTimestamp(new Date()), text: "", pendingText: "" },
       ]);
 
       const staged = contextStatusRef.current;
@@ -325,8 +334,12 @@ export function useLiveKitRoom() {
         // the agent joins goes into the void (no recipient).
         const agent = await waitForAgent(room, AGENT_WAIT_TIMEOUT_MS);
         if (!agent) {
-          setContextStatus({ phase: "error", error: "Agent did not join in time. Try Connect again." });
-          // Continue to enable mic; user can still operate without context.
+          setContextStatus({
+            phase: "error",
+            error: "Agent did not join in time. Try Connect again.",
+          });
+          // Fall through and enable the mic — user can still operate
+          // without context.
         } else {
           const payload = {
             type: "context",
@@ -334,10 +347,10 @@ export function useLiveKitRoom() {
             statements: staged.statements,
           };
           const encoder = new TextEncoder();
-          await room.localParticipant.publishData(encoder.encode(JSON.stringify(payload)), {
-            reliable: true,
-            topic: "context",
-          });
+          await room.localParticipant.publishData(
+            encoder.encode(JSON.stringify(payload)),
+            { reliable: true, topic: "context" },
+          );
           setContextStatus({
             phase: "loading",
             mode: staged.mode,
@@ -349,28 +362,15 @@ export function useLiveKitRoom() {
             count: staged.statements.length,
           });
 
-          // Mic stays off until vetting reports "ready". For gospel mode
-          // this is near-instant; for nuanced it can take seconds.
+          // Mic stays off until vetting reports "ready" (handled by the
+          // useEffect below). Gospel arrives near-instantly; nuanced takes
+          // a few seconds.
           setStatus("connected");
           return;
         }
       }
 
       await room.localParticipant.setMicrophoneEnabled(true);
-      
-      const newId = newSessionId();
-      activeSessionIdRef.current = newId;
-      setActiveSessionId(newId);
-
-      setSessions((previousSessions) => [
-        ...previousSessions,
-        {
-          id: newId,
-          startedAt: formatTimestamp(new Date()),
-          text: "",
-          pendingText: "",
-        },
-      ]);
       setStatus("connected");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -417,6 +417,7 @@ export function useLiveKitRoom() {
     error,
     sessions,
     flags,
+    activeSessionId,
     connect,
     disconnect,
     contextStatus,

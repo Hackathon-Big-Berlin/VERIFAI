@@ -1,6 +1,7 @@
 import { useRef, type ChangeEvent } from "react";
 import { FactCheckSidebar } from "@/components/sidepanel/FactCheckSidebar";
 import { TranscriptPanel } from "@/components/transcript/TranscriptPanel";
+import { Meter } from "@/components/Meter";
 import { useLiveKitRoom, type ContextMode } from "@/hooks/useLiveKitRoom";
 
 const Index = () => {
@@ -9,6 +10,7 @@ const Index = () => {
     error: livekitError,
     sessions,
     flags,
+    activeSessionId,
     connect,
     disconnect,
     contextStatus,
@@ -31,8 +33,10 @@ const Index = () => {
     contextStatus.phase === "loading" || contextStatus.phase === "vetting";
 
   return (
-    <main className="flex min-h-screen flex-col bg-background text-foreground lg:flex-row">
-      <div className="fixed right-4 top-4 z-50 flex flex-col gap-2 rounded-md border bg-card/95 px-3 py-3 text-sm shadow-lg">
+    <div className="flex min-h-screen flex-col bg-background text-foreground">
+      <Meter flags={flags} activeSessionId={activeSessionId} />
+      <main className="relative flex flex-1 flex-col lg:flex-row">
+      <div className="fixed right-4 top-20 z-50 flex flex-col gap-2 rounded-md border bg-card/95 px-3 py-3 text-sm shadow-lg">
         <div className="flex items-center gap-2">
           <span className="font-medium">LiveKit:</span>
           <span className="font-mono text-xs">{livekitStatus}</span>
@@ -83,7 +87,8 @@ const Index = () => {
 
       <TranscriptPanel sessions={sessions} flags={flags} isLive={livekitStatus === "connected"} />
       <FactCheckSidebar flags={flags} />
-    </main>
+      </main>
+    </div>
   );
 };
 
