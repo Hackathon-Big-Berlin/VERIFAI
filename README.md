@@ -35,4 +35,4 @@ This project is a real-time, voice fact checker for the ai-coustics/telli track 
 6. run ```npm install```
 ### Run
 1. Terminal 1: ```npm run dev```
-2. Terminal 2: ```cd backend, uv run python src/agent.py dev```
+2. Terminal 2: ```cd backend; uv run python src/agent.py dev```
