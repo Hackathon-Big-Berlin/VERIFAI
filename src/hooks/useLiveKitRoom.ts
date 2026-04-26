@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ParticipantKind, Room, RoomEvent, type RemoteParticipant } from "livekit-client";
+import { 
+  ParticipantKind, 
+  Room, 
+  RoomEvent, 
+  Track,
+  type RemoteTrack,
+  type RemoteTrackPublication,
+  type RemoteParticipant 
+} from "livekit-client";
 import type { TranscriptSession, FactCheckFlag } from "@/lib/types";
 
 type DataChannelMessage =
@@ -36,24 +44,34 @@ export function useLiveKitRoom() {
   const [flags, setFlags] = useState<FactCheckFlag[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
+  // New Interview Mode State
+  const [interviewMode, setInterviewMode] = useState<boolean>(false);
+  const interviewModeRef = useRef<boolean>(false);
+  const audioElementsRef = useRef<HTMLAudioElement[]>([]);
+
+  const toggleInterviewMode = useCallback(() => {
+    setInterviewMode((prev) => {
+      const next = !prev;
+      interviewModeRef.current = next;
+      // Instantly mute or unmute existing DOM audio elements
+      audioElementsRef.current.forEach((el) => {
+        el.muted = !next;
+      });
+      return next;
+    });
+  }, []);
+
   const ensureRoomConnected = useCallback(async (): Promise<Room | null> => {
     if (roomRef.current) {
-      console.log("[livekit] reusing existing room instance");
       return roomRef.current;
     }
 
     if (!LIVEKIT_URL || !LIVEKIT_TOKEN) {
       const msg = "Missing VITE_LIVEKIT_URL or VITE_LIVEKIT_TOKEN in .env";
-      console.error(msg);
       setError(msg);
       setStatus("error");
       return null;
     }
-
-    console.log("[livekit] creating room", {
-      url: LIVEKIT_URL,
-      hasToken: Boolean(LIVEKIT_TOKEN),
-    });
 
     const room = new Room({
       adaptiveStream: true,
@@ -68,7 +86,6 @@ export function useLiveKitRoom() {
         try {
           message = JSON.parse(decoder.decode(payload)) as DataChannelMessage;
         } catch (err) {
-          console.warn("[livekit data] non-JSON payload", err);
           return;
         }
 
@@ -127,11 +144,37 @@ export function useLiveKitRoom() {
       },
     );
 
+    room.on(
+      RoomEvent.TrackSubscribed,
+      (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+        if (track.kind === Track.Kind.Audio) {
+          const element = track.attach() as HTMLAudioElement;
+          element.muted = !interviewModeRef.current; // sync with current state
+          audioElementsRef.current.push(element);
+          document.body.appendChild(element);
+        } else if (track.kind === Track.Kind.Video) {
+          const element = track.attach();
+          document.body.appendChild(element);
+        }
+      }
+    );
+
+    room.on(
+      RoomEvent.TrackUnsubscribed,
+      (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+        const elements = track.detach();
+        elements.forEach((el) => {
+          if (el instanceof HTMLAudioElement) {
+            audioElementsRef.current = audioElementsRef.current.filter(a => a !== el);
+          }
+          el.remove();
+        });
+      }
+    );
+
     room.on(RoomEvent.Disconnected, () => {
-      console.log("[livekit] room disconnected");
       roomRef.current = null;
       setStatus("idle");
-      // Intentionally NOT clearing activeSessionId here so the meter persists
     });
 
     await room.connect(LIVEKIT_URL, LIVEKIT_TOKEN);
@@ -178,7 +221,6 @@ export function useLiveKitRoom() {
     }
     roomRef.current = null;
     setStatus("idle");
-    // Intentionally NOT clearing activeSessionId here so the meter persists
   }, []);
 
   useEffect(() => {
@@ -188,5 +230,5 @@ export function useLiveKitRoom() {
     };
   }, []);
 
-  return { status, error, sessions, flags, activeSessionId, connect, disconnect };
+  return { status, error, sessions, flags, activeSessionId, connect, disconnect, interviewMode, toggleInterviewMode };
 }

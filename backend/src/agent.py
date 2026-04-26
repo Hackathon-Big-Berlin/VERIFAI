@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -22,7 +23,6 @@ logger = logging.getLogger("agent")
 
 
 def configure_logging() -> None:
-    # Ensure debug/info logs are visible during local dev runs.
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
@@ -36,17 +36,14 @@ server = AgentServer()
 
 @server.rtc_session(agent_name="my-agent")
 async def my_agent(ctx: JobContext):
-    # Logging setup
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
 
     session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text
         stt=inference.STT(model="deepgram/nova-3", language="multi"),
     )
 
-    # Initialize Gradium TTS and LiveKit Audio infrastructure for Live Reporter Mode
     tts = gradium.TTS()
     audio_source = rtc.AudioSource(
         sample_rate=tts.sample_rate, 
@@ -63,8 +60,6 @@ async def my_agent(ctx: JobContext):
     def normalize_claim(text: str) -> str:
         return text.lower().strip(" \t\r\n.,!?;:'\"`-")
 
-    # Run the pipeline on each completed sentence and publish successful,
-    # novel verdicts to the data channel. If FALSE, trigger Gradium TTS alert.
     async def fact_check_worker():
         while True:
             version, sentence, history = await fact_check_queue.get()
@@ -94,11 +89,10 @@ async def my_agent(ctx: JobContext):
                 if not norm:
                     continue
                 if published_verdicts.get(norm) == verdict:
-                    continue  # same claim, same verdict — already shown
+                    continue  
                 
                 published_verdicts[norm] = verdict
 
-                # 1. Publish Data Channel Flag to Frontend
                 flag_payload = json.dumps(
                     {
                         "type": "flag",
@@ -124,9 +118,14 @@ async def my_agent(ctx: JobContext):
                         claim[:80],
                     )
 
-                # 2. Live Reporter Mode - Voice Notification via Gradium
                 if verdict == "FALSE":
-                    warning_text = f"Fact check alert: {result.get('reasoning', '')}"
+                    reasoning_text = result.get('reasoning', '')
+                    
+                    # Regex to extract the first sentence (stops at the first period, exclamation, or question mark)
+                    match = re.search(r'[^.!?]+[.!?]', reasoning_text)
+                    first_sentence = match.group(0).strip() if match else reasoning_text
+
+                    warning_text = f"Fact check alert: {first_sentence}"
                     try:
                         logger.info("[worker] Synthesizing audio alert: %r", warning_text)
                         async for audio_event in tts.synthesize(warning_text):
@@ -149,7 +148,6 @@ async def my_agent(ctx: JobContext):
 
     fact_check_worker_task = asyncio.create_task(fact_check_worker())
 
-    # Self-test: a checkable false claim so we can see the pipeline light up
     fact_check_queue.put_nowait((-1, "The capital of France is Berlin.", ""))
 
     def forward_transcript_to_data_channel(event):
@@ -193,7 +191,6 @@ async def my_agent(ctx: JobContext):
     try:
         await ctx.connect()
         
-        # Publish our standalone TTS track so the room can hear the reporter alerts
         options = rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
         await ctx.room.local_participant.publish_track(audio_track, options)
 
@@ -212,7 +209,6 @@ async def my_agent(ctx: JobContext):
     finally:
         fact_check_worker_task.cancel()
         await asyncio.gather(fact_check_worker_task, return_exceptions=True)
-
 
 if __name__ == "__main__":
     configure_logging()
