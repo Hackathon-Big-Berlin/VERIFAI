@@ -18,11 +18,15 @@ export type TranscriptSession = {
 
 export type FactCheckVerdict = "TRUE" | "FALSE" | "PARTIALLY TRUE" | "INCONCLUSIVE";
 
-// Find this interface in your types file and update the keys
 export interface FactCheckFlag {
   type: "flag";
-  claim: string;       // Changed from 'sentence'
+  claim: string;
   verdict: string;
-  reasoning: string;   // Changed from 'reason'
-  sources: string[];   // Changed from 'source' (string) to array
+  reasoning: string;
+  sources: string[];
+  // True when the verdict was likely informed by user-uploaded trusted
+  // context (lexical-overlap heuristic on the backend; see
+  // backend/src/context_loader.py:context_likely_relevant). Drives the
+  // "from context" badge on the side-panel card.
+  used_trusted_context?: boolean;
 }
