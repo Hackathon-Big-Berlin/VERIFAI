@@ -1,4 +1,4 @@
-# AI Voice Assistant: Debate Coach & Interviewer
+# VerifAI: A live fact-checking service utilizing Tavily and Gemini integration for in depth analysis of claims
 
 This project is a real-time, voice fact checker for the ai-coustics/telli track built using the partner technologies Google Gemini, Lovable, Tavily and Gradium. It takes in speech using LiveKit STT and preprocesses it with ai-coustics. This is then run through a fact-checking pipeline utilizing Tavily for research and Google Gemini for claim extraction and finalizing the verdict of the claim. We use a sliding window of context so that the verdicts are sent to the frontend in real time. These are displayed on a modern dashboard designed using Lovable.
 
