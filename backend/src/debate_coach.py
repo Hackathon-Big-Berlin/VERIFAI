@@ -52,6 +52,28 @@ Return valid JSON only with this shape:
 }
 """
 
+DEBATE_CHAT_PROMPT = """
+You are the AI side of a live debate.
+
+Debate style requirements:
+1. Be clear, direct, and logically structured.
+2. Defend your position firmly, but remain respectful and professional.
+3. Address the user's latest argument directly before introducing new points.
+4. Avoid insults, mockery, or dismissive language.
+5. Keep each response concise and spoken-friendly (about 4-8 sentences).
+
+Context rules:
+1. The debate topic is fixed to <TOPIC>.
+2. Stay on this topic at all times.
+3. Use the recent conversation turns in <CONVERSATION>.
+
+Output rules:
+Return valid JSON only with exactly this shape:
+{
+    "response_text": "..."
+}
+"""
+
 
 def _get_gemini_api_key() -> str:
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
@@ -150,6 +172,40 @@ async def evaluate_user_turn(user_turn: str, context_snapshot: str) -> Dict[str,
         "weakClaims": weak_claims if isinstance(weak_claims, list) else [],
         "coachingSuggestion": suggestion,
     }
+
+
+async def generate_debate_reply(
+    topic: str,
+    conversation: List[Dict[str, str]],
+    latest_user_turn: str,
+) -> str:
+    """Generate the next debate response for chat-like turn taking."""
+    client = genai.Client(api_key=_get_gemini_api_key())
+    conversation_lines = []
+    for turn in conversation[-12:]:
+        role = str(turn.get("role", "user")).upper()
+        text = str(turn.get("text", "")).strip()
+        if text:
+            conversation_lines.append(f"{role}: {text}")
+
+    prompt = (
+        f"{DEBATE_CHAT_PROMPT}\n"
+        f"<TOPIC>{topic}</TOPIC>\n"
+        f"<LATEST_USER_TURN>{latest_user_turn}</LATEST_USER_TURN>\n"
+        f"<CONVERSATION>{'\\n'.join(conversation_lines)}</CONVERSATION>"
+    )
+
+    try:
+        response = await client.aio.models.generate_content(
+            model=GEMINI_MODEL_NAME,
+            contents=prompt,
+        )
+        raw = response.text if response and response.text else "{}"
+        parsed = json.loads(_clean_json_response(raw))
+        return str(parsed.get("response_text", "")).strip()
+    except Exception:
+        logger.exception("Failed to generate debate chat reply")
+        return ""
 
 
 def compute_final_score(score_rows: List[Dict[str, int]]) -> Dict[str, Any]:

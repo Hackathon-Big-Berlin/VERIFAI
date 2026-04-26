@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-from collections import deque
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -18,17 +17,16 @@ from livekit.agents import (
 )
 from livekit.plugins import ai_coustics, silero
 
-from debate_coach import compute_final_score, evaluate_user_turn, generate_model_turn
+from buffer import TranscriptBuffer
+from debate_coach import generate_debate_reply
+from fact_checker import fact_check_sentence
 
 logger = logging.getLogger("agent")
-MAX_CONTEXT_WORDS = 500
 ENABLE_DEBATE_COACH = os.getenv("ENABLE_DEBATE_COACH", "1") == "1"
-from buffer import TranscriptBuffer
-from fact_checker import fact_check_sentence
+DEBATE_SILENCE_SECONDS = 7
 
 
 def configure_logging() -> None:
-    # Ensure debug/info logs are visible during local dev runs.
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
@@ -36,51 +34,41 @@ def configure_logging() -> None:
     )
     logger.debug("logging configured", extra={"level": "DEBUG"})
 
+
 load_dotenv(".env.local")
 
 server = AgentServer()
 
+
 @server.rtc_session(agent_name="my-agent")
 async def my_agent(ctx: JobContext):
-    # Logging setup
-    # Add any other context you want in all log entries here
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
 
     session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all available models at https://docs.livekit.io/agents/models/stt/
         stt=inference.STT(model="deepgram/nova-3", language="multi"),
     )
 
-    # Strong refs to in-flight transcript-publish tasks so they aren't GC'd
-    # mid-await (ruff RUF006).
     pending_publishes: set[asyncio.Task] = set()
-    # Sliding context window for downstream Gemini prompting.
-    # This is intentionally plain text for now and only includes finalized STT chunks.
-    context_words: deque[str] = deque(maxlen=MAX_CONTEXT_WORDS)
-    context_window: str = ""
-    context_version = 0
+
     app_mode: Literal["analysis", "debate"] = "analysis"
-    fact_check_queue: asyncio.Queue[tuple[int, str]] = asyncio.Queue()
-    debate_queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
-    debate_score_rows: list[dict[str, int]] = []
-    # Sentence buffer that emits complete sentences (with recent-sentence
-    # history for pronoun resolution) as STT finals arrive.
+
     transcript_buffer = TranscriptBuffer()
     sentence_version = 0
-    # Dedup key = normalized claim (lowercased, stripped of punctuation/space).
-    # Maps to the last verdict we published for that claim; we only re-publish
-    # when the verdict changes, and the frontend replaces the existing card.
-    # Matches the frontend's normalizeClaim() exactly.
+    fact_check_queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
     published_verdicts: dict[str, str] = {}
+
+    debate_topic: str | None = None
+    debate_history: list[dict[str, str]] = []
+    debate_pending_finals: list[str] = []
+    debate_turn_counter = 0
+    debate_response_lock = asyncio.Lock()
+    debate_silence_task: asyncio.Task | None = None
 
     def normalize_claim(text: str) -> str:
         return text.lower().strip(" \t\r\n.,!?;:'\"`-")
 
-    # Run the pipeline on each completed sentence and publish successful,
-    # novel verdicts to the data channel as topic="flag".
     async def fact_check_worker():
         while True:
             version, sentence, history = await fact_check_queue.get()
@@ -98,17 +86,20 @@ async def my_agent(ctx: JobContext):
                     result.get("status"),
                     result.get("verdict"),
                 )
-                logger.debug("[worker] full result version=%s: %s", version, json.dumps(result))
+                logger.debug(
+                    "[worker] full result version=%s: %s", version, json.dumps(result)
+                )
 
                 if result.get("status") != "success":
                     continue
+
                 claim = result.get("claim", "")
                 verdict = result.get("verdict", "")
                 norm = normalize_claim(claim)
                 if not norm:
                     continue
                 if published_verdicts.get(norm) == verdict:
-                    continue  # same claim, same verdict — already shown
+                    continue
                 published_verdicts[norm] = verdict
 
                 flag_payload = json.dumps(
@@ -121,24 +112,15 @@ async def my_agent(ctx: JobContext):
                     }
                 ).encode("utf-8")
 
-                try:
-                    await ctx.room.local_participant.publish_data(
-                        flag_payload, reliable=True, topic="flag"
-                    )
-                    logger.info(
-                        "[worker] published flag verdict=%s claim=%r",
-                        verdict,
-                        claim[:80],
-                    )
-                except Exception:
-                    logger.exception(
-                        "[worker] failed to publish flag claim=%r",
-                        claim[:80],
-                    )
+                await ctx.room.local_participant.publish_data(
+                    flag_payload, reliable=True, topic="flag"
+                )
+                logger.info(
+                    "[worker] published flag verdict=%s claim=%r",
+                    verdict,
+                    claim[:80],
+                )
             except asyncio.CancelledError as e:
-                # Diagnostic: a single bad Gemini call shouldn't kill the
-                # worker forever. Log the underlying cause and keep looping
-                # so subsequent queue items still get processed.
                 logger.warning(
                     "[worker] cancellation received version=%s cause=%r — keeping worker alive",
                     version,
@@ -149,92 +131,95 @@ async def my_agent(ctx: JobContext):
             finally:
                 fact_check_queue.task_done()
 
-    async def debate_worker():
-        nonlocal app_mode
-        while True:
-            version, user_turn_text, context_snapshot = await debate_queue.get()
-            if app_mode != "debate":
-                continue
-            turn_id = f"turn-{version}"
-            timestamp = datetime.now(timezone.utc).isoformat()
+    async def publish_debate_turn(role: Literal["user", "model"], text: str):
+        nonlocal debate_turn_counter
+
+        debate_turn_counter += 1
+        turn_id = f"{role}-{debate_turn_counter}"
+        timestamp = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(
+            {
+                "type": "debate_turn",
+                "role": role,
+                "turnId": turn_id,
+                "text": text,
+                "timestamp": timestamp,
+            }
+        ).encode("utf-8")
+
+        await ctx.room.local_participant.publish_data(payload, reliable=True, topic="debate")
+
+    async def maybe_respond_to_debate_turn():
+        nonlocal debate_topic
+
+        if app_mode != "debate" or not debate_pending_finals:
+            return
+        if debate_response_lock.locked():
+            return
+
+        async with debate_response_lock:
+            if app_mode != "debate" or not debate_pending_finals:
+                return
+
+            user_turn_text = " ".join(debate_pending_finals).strip()
+            debate_pending_finals.clear()
+            if not user_turn_text:
+                return
+
+            if debate_topic is None:
+                # The user's first complete turn defines the debate topic.
+                debate_topic = user_turn_text
+
+            debate_history.append({"role": "user", "text": user_turn_text})
+            debate_history[:] = debate_history[-12:]
+
             try:
-                user_turn_payload = json.dumps(
-                    {
-                        "type": "debate_turn",
-                        "role": "user",
-                        "turnId": turn_id,
-                        "text": user_turn_text,
-                        "timestamp": timestamp,
-                    }
-                ).encode("utf-8")
-                await ctx.room.local_participant.publish_data(
-                    user_turn_payload, reliable=True, topic="debate"
-                )
+                await publish_debate_turn("user", user_turn_text)
+            except Exception:
+                logger.exception("[debate] failed publishing user turn")
+                return
 
-                model_turn = await generate_model_turn(user_turn_text, context_snapshot)
-                model_turn_payload = json.dumps(
-                    {
-                        "type": "debate_turn",
-                        "role": "model",
-                        "turnId": f"model-{turn_id}",
-                        "text": model_turn.get("response_text", ""),
-                        "timestamp": timestamp,
-                    }
-                ).encode("utf-8")
-                await ctx.room.local_participant.publish_data(
-                    model_turn_payload, reliable=True, topic="debate"
-                )
-
-                score_update = await evaluate_user_turn(user_turn_text, context_snapshot)
-                scores = score_update.get("scores", {})
-                if isinstance(scores, dict):
-                    debate_score_rows.append(
-                        {
-                            "logicalConsistency": int(scores.get("logicalConsistency", 0)),
-                            "evidenceQuality": int(scores.get("evidenceQuality", 0)),
-                            "rebuttalEffectiveness": int(scores.get("rebuttalEffectiveness", 0)),
-                            "clarityStructure": int(scores.get("clarityStructure", 0)),
-                            "responsiveness": int(scores.get("responsiveness", 0)),
-                        }
-                    )
-
-                score_payload = json.dumps(
-                    {
-                        "type": "debate_score",
-                        "turnId": turn_id,
-                        "scores": score_update.get("scores", {}),
-                        "strongClaims": score_update.get("strongClaims", []),
-                        "weakClaims": score_update.get("weakClaims", []),
-                        "coachingSuggestion": score_update.get("coachingSuggestion", ""),
-                    }
-                ).encode("utf-8")
-                await ctx.room.local_participant.publish_data(
-                    score_payload, reliable=True, topic="debate"
-                )
-
-                final_score = compute_final_score(debate_score_rows)
-                final_payload = json.dumps(
-                    {
-                        "type": "debate_final_score",
-                        **final_score,
-                    }
-                ).encode("utf-8")
-                await ctx.room.local_participant.publish_data(
-                    final_payload, reliable=True, topic="debate"
-                )
-            except asyncio.CancelledError as e:
-                logger.warning(
-                    "[debate] cancellation received version=%s cause=%r — keeping worker alive",
-                    version,
-                    e.__cause__,
+            try:
+                model_text = await generate_debate_reply(
+                    topic=debate_topic,
+                    conversation=debate_history,
+                    latest_user_turn=user_turn_text,
                 )
             except Exception:
-                logger.exception("[debate] failed version=%s", version)
-            finally:
-                debate_queue.task_done()
+                logger.exception("[debate] failed generating model response")
+                return
+
+            if not model_text:
+                return
+
+            debate_history.append({"role": "model", "text": model_text})
+            debate_history[:] = debate_history[-12:]
+
+            try:
+                await publish_debate_turn("model", model_text)
+            except Exception:
+                logger.exception("[debate] failed publishing model turn")
+
+    def schedule_debate_silence_timer():
+        nonlocal debate_silence_task
+
+        if not ENABLE_DEBATE_COACH or app_mode != "debate":
+            return
+
+        if debate_silence_task and not debate_silence_task.done():
+            debate_silence_task.cancel()
+
+        async def _wait_for_silence_and_respond():
+            try:
+                await asyncio.sleep(DEBATE_SILENCE_SECONDS)
+                await maybe_respond_to_debate_turn()
+            except asyncio.CancelledError:
+                return
+
+        debate_silence_task = asyncio.create_task(_wait_for_silence_and_respond())
 
     def handle_control_message(data_packet):
-        nonlocal app_mode
+        nonlocal app_mode, debate_topic, debate_turn_counter
 
         if data_packet.topic != "control":
             return
@@ -247,7 +232,6 @@ async def my_agent(ctx: JobContext):
 
         if not isinstance(payload, dict):
             return
-
         if payload.get("type") != "app_mode":
             return
 
@@ -255,31 +239,37 @@ async def my_agent(ctx: JobContext):
         if mode not in ("analysis", "debate"):
             logger.warning("[control] unsupported mode: %r", mode)
             return
-
         if mode == app_mode:
             return
 
         app_mode = mode
-        if app_mode == "debate":
-            debate_score_rows.clear()
+        if app_mode == "analysis":
+            debate_pending_finals.clear()
+            if debate_silence_task and not debate_silence_task.done():
+                debate_silence_task.cancel()
+        else:
+            debate_topic = None
+            debate_history.clear()
+            debate_pending_finals.clear()
+            debate_turn_counter = 0
+
         logger.info("[control] switched app mode to %s", app_mode)
 
     fact_check_worker_task = asyncio.create_task(fact_check_worker())
-    debate_worker_task = asyncio.create_task(debate_worker()) if ENABLE_DEBATE_COACH else None
     ctx.room.on("data_received", handle_control_message)
 
-    # Self-test: a checkable false claim so we can see the pipeline light up
-    # on dispatch without depending on the user speaking. History is empty
-    # because there's no prior context.
     fact_check_queue.put_nowait((-1, "The capital of France is Berlin.", ""))
 
     def forward_transcript_to_data_channel(event):
         nonlocal sentence_version
 
+        if event.transcript and event.transcript.strip() and app_mode == "debate":
+            if event.is_final:
+                debate_pending_finals.append(event.transcript.strip())
+            # Any new transcript activity (interim or final) resets silence timer.
+            schedule_debate_silence_timer()
+
         if event.is_final and event.transcript and event.transcript.strip():
-            # Feed the buffer; it returns any complete sentences with their
-            # recent-sentence history. Often zero (chunk didn't end with .!?)
-            # or one; occasionally more if the chunk contains multiple sentences.
             for sentence, history in transcript_buffer.process_chunk(event.transcript):
                 sentence_version += 1
                 fact_check_queue.put_nowait((sentence_version, sentence, history))
@@ -290,8 +280,6 @@ async def my_agent(ctx: JobContext):
                     len(history),
                 )
 
-        # session.on(...) callbacks are sync, but publish_data is async.
-        # Schedule the publish on the running event loop so we don't block.
         payload = json.dumps(
             {
                 "type": "transcript",
@@ -317,32 +305,26 @@ async def my_agent(ctx: JobContext):
     session.on("user_input_transcribed", forward_transcript_to_data_channel)
 
     try:
-        # Join the room before starting the voice pipeline so the agent can receive
-        # browser microphone audio and publish transcript events back to the frontend.
         await ctx.connect()
 
         await session.start(
-                agent=Agent(instructions="Transcribe user speech. Do not respond."),
-                room=ctx.room,
-                room_options=room_io.RoomOptions(
-                    # Tear down the room when the user disconnects so the next
-                    # Connect creates a fresh room and re-triggers agent dispatch
-                    # (rooms otherwise linger ~5min on LiveKit Cloud and reconnecting
-                    # joins the existing room without dispatching the agent).
-                    delete_room_on_close=True,
-                    audio_input=room_io.AudioInputOptions(
-                        noise_cancellation=ai_coustics.audio_enhancement(
-                            model=ai_coustics.EnhancerModel.QUAIL_VF_L
-                        ),
+            agent=Agent(instructions="Transcribe user speech. Do not respond."),
+            room=ctx.room,
+            room_options=room_io.RoomOptions(
+                delete_room_on_close=True,
+                audio_input=room_io.AudioInputOptions(
+                    noise_cancellation=ai_coustics.audio_enhancement(
+                        model=ai_coustics.EnhancerModel.QUAIL_VF_L
                     ),
                 ),
-            )
+            ),
+        )
     finally:
         fact_check_worker_task.cancel()
         await asyncio.gather(fact_check_worker_task, return_exceptions=True)
-        if debate_worker_task:
-            debate_worker_task.cancel()
-            await asyncio.gather(debate_worker_task, return_exceptions=True)
+        if debate_silence_task and not debate_silence_task.done():
+            debate_silence_task.cancel()
+            await asyncio.gather(debate_silence_task, return_exceptions=True)
 
 
 if __name__ == "__main__":
