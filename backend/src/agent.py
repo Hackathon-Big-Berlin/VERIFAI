@@ -67,10 +67,10 @@ async def my_agent(ctx: JobContext):
     audio_track = rtc.LocalAudioTrack.create_audio_track("debate_tts", audio_source)
 
     pending_publishes: set[asyncio.Task] = set()
+    pending_fact_checks: set[asyncio.Task] = set()
     app_mode: Literal["normal", "interview", "debate"] = "normal"
     transcript_buffer = TranscriptBuffer()
     sentence_version = 0
-    fact_check_queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
     published_verdicts: dict[str, str] = {}
 
     debate_topic: str | None = None
@@ -90,57 +90,53 @@ async def my_agent(ctx: JobContext):
         chunks = re.split(r"(?<=[.!?])\s+", text.strip())
         return [chunk.strip() for chunk in chunks if chunk.strip()]
 
-    async def fact_check_worker():
-        while True:
-            version, sentence, history = await fact_check_queue.get()
-            try:
-                logger.info("[worker] received version=%s sentence=%r history_len=%s", version, sentence[:120], len(history))
-                result = await fact_check_sentence(sentence, history)
-                logger.info("[worker] result version=%s status=%s verdict=%s", version, result.get("status"), result.get("verdict"))
-                logger.debug("[worker] full result version=%s: %s", version, json.dumps(result))
+    async def process_fact_check(version: int, sentence: str, history: str) -> None:
+        try:
+            logger.info("[worker] received version=%s sentence=%r history_len=%s", version, sentence[:120], len(history))
+            result = await fact_check_sentence(sentence, history)
+            logger.info("[worker] result version=%s status=%s verdict=%s", version, result.get("status"), result.get("verdict"))
+            logger.debug("[worker] full result version=%s: %s", version, json.dumps(result))
 
-                if result.get("status") != "success":
-                    continue
+            if result.get("status") != "success":
+                return
 
-                claim = str(result.get("claim", ""))
-                verdict = str(result.get("verdict", ""))
-                norm = normalize_claim(claim)
-                if not norm:
-                    continue
-                if published_verdicts.get(norm) == verdict:
-                    continue
-                published_verdicts[norm] = verdict
+            claim = str(result.get("claim", ""))
+            verdict = str(result.get("verdict", ""))
+            norm = normalize_claim(claim)
+            if not norm:
+                return
+            if published_verdicts.get(norm) == verdict:
+                return
+            published_verdicts[norm] = verdict
 
-                flag_payload = json.dumps(
-                    {
-                        "type": "flag",
-                        "claim": claim,
-                        "verdict": verdict,
-                        "reasoning": result.get("reasoning", ""),
-                        "sources": result.get("sources", []),
-                    }
-                ).encode("utf-8")
+            flag_payload = json.dumps(
+                {
+                    "type": "flag",
+                    "claim": claim,
+                    "verdict": verdict,
+                    "reasoning": result.get("reasoning", ""),
+                    "sources": result.get("sources", []),
+                }
+            ).encode("utf-8")
 
-                await ctx.room.local_participant.publish_data(flag_payload, reliable=True, topic="flag")
-                logger.info("[worker] published flag verdict=%s claim=%r", verdict, claim[:80])
+            await ctx.room.local_participant.publish_data(flag_payload, reliable=True, topic="flag")
+            logger.info("[worker] published flag verdict=%s claim=%r", verdict, claim[:80])
 
-                if app_mode == "interview" and verdict == "FALSE":
-                    reasoning_text = str(result.get("reasoning", ""))
-                    match = re.search(r"[^.!?]+[.!?]", reasoning_text)
-                    first_sentence = match.group(0).strip() if match else reasoning_text
-                    warning_text = f"Fact check alert: {first_sentence}"
-                    try:
-                        logger.info("[worker] synthesizing interview alert: %r", warning_text)
-                        async for audio_event in tts.synthesize(warning_text):
-                            await audio_source.capture_frame(audio_event.frame)
-                    except Exception:
-                        logger.exception("[worker] failed to synthesize interview alert")
-            except asyncio.CancelledError as e:
-                logger.warning("[worker] cancellation received version=%s cause=%r — keeping worker alive", version, e.__cause__)
-            except Exception:
-                logger.exception("[worker] failed version=%s", version)
-            finally:
-                fact_check_queue.task_done()
+            if app_mode == "interview" and verdict == "FALSE":
+                reasoning_text = str(result.get("reasoning", ""))
+                match = re.search(r"[^.!?]+[.!?]", reasoning_text)
+                first_sentence = match.group(0).strip() if match else reasoning_text
+                warning_text = f"Fact check alert: {first_sentence}"
+                try:
+                    logger.info("[worker] synthesizing interview alert: %r", warning_text)
+                    async for audio_event in tts.synthesize(warning_text):
+                        await audio_source.capture_frame(audio_event.frame)
+                except Exception:
+                    logger.exception("[worker] failed to synthesize interview alert")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[worker] failed version=%s", version)
 
     async def publish_debate_turn(role: Literal["user", "model"], text: str, sources: list[str] | None = None) -> str:
         nonlocal debate_turn_counter
@@ -441,8 +437,10 @@ async def my_agent(ctx: JobContext):
         if event.is_final and event.transcript and event.transcript.strip():
             for sentence, history in transcript_buffer.process_chunk(event.transcript):
                 sentence_version += 1
-                fact_check_queue.put_nowait((sentence_version, sentence, history))
                 logger.debug("[buffer] queued sentence v=%s text=%r history_len=%s", sentence_version, sentence[:80], len(history))
+                task = asyncio.create_task(process_fact_check(sentence_version, sentence, history))
+                pending_fact_checks.add(task)
+                task.add_done_callback(pending_fact_checks.discard)
 
         payload = json.dumps(
             {
@@ -460,7 +458,6 @@ async def my_agent(ctx: JobContext):
         pending_publishes.add(task)
         task.add_done_callback(pending_publishes.discard)
 
-    fact_check_worker_task = asyncio.create_task(fact_check_worker())
     ctx.room.on("data_received", handle_control_message)
     session.on("user_input_transcribed", forward_transcript_to_data_channel)
 
@@ -473,11 +470,38 @@ async def my_agent(ctx: JobContext):
         await session.start(
             agent=Agent(instructions="Transcribe user speech. Do not respond."),
             room=ctx.room,
-            room_options=build_room_options(),
+            room_options=room_io.RoomOptions(
+                audio_input=room_io.AudioInputOptions(
+                    noise_cancellation=ai_coustics.audio_enhancement(
+                        # QUAIL_VF_L  -> best for single foreground speaker (your case)
+                        # QUAIL_L     -> better if you ever need multi-speaker / diarization
+                        model=ai_coustics.EnhancerModel.QUAIL_VF_L,
+                        # enhancement_level controls suppression aggressiveness:
+                        #   0.5 = conservative - always preserves foreground speech, minimal artifacts
+                        #   0.8 = balanced    - optimal WER on challenging real-world data (recommended)
+                        #   1.0 = aggressive  - maximum suppression, risk of over-filtering quiet speech
+                        model_parameters=ai_coustics.ModelParameters(enhancement_level=0.8),
+                        # VAD settings tune how the model detects speech boundaries:
+                        vad_settings=ai_coustics.VadSettings(
+                            # How long (seconds) to keep VAD "on" after speech ends; prevents clipping.
+                            # Range: 0.0-1.0s | Lower = tighter turn-taking, Higher = less cutoff
+                            speech_hold_duration=0.03,
+                            # How sensitive VAD is to speech vs noise.
+                            # Range: 1.0-15.0 | Higher = more sensitive (catches whispers, but more false triggers)
+                            sensitivity=6.0,
+                            # Minimum duration (seconds) before a segment is treated as speech.
+                            # Range: 0.0-1.0s | Raise to filter out very short utterances/clicks
+                            minimum_speech_duration=0.01,
+                        ),
+                    ),
+                ),
+            ),
         )
     finally:
-        fact_check_worker_task.cancel()
-        await asyncio.gather(fact_check_worker_task, return_exceptions=True)
+        for task in list(pending_fact_checks):
+            task.cancel()
+        if pending_fact_checks:
+            await asyncio.gather(*pending_fact_checks, return_exceptions=True)
         if debate_silence_task and not debate_silence_task.done():
             debate_silence_task.cancel()
             await asyncio.gather(debate_silence_task, return_exceptions=True)

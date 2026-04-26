@@ -324,12 +324,15 @@ async def evaluate_user_turn_coaching(
             f"CLAIM: {claim}\nVERDICT: {verdict}\nREASONING: {reasoning}\nSOURCES: {source_text}"
         )
 
+    conversation_block = "\n".join(conversation_lines)
+    claim_checks_block = "\n\n".join(claim_check_lines)
+
     prompt = (
         f"{DEBATE_EVALUATION_WITH_CLAIMS_PROMPT}\n"
         f"<TOPIC>{topic}</TOPIC>\n"
         f"<USER_TURN>{user_turn}</USER_TURN>\n"
-        f"<CONVERSATION>{'\\n'.join(conversation_lines)}</CONVERSATION>\n"
-        f"<CLAIM_CHECKS>{'\\n\n'.join(claim_check_lines)}</CLAIM_CHECKS>"
+        f"<CONVERSATION>{conversation_block}</CONVERSATION>\n"
+        f"<CLAIM_CHECKS>{claim_checks_block}</CLAIM_CHECKS>"
     )
 
     response = await client.aio.models.generate_content(
