@@ -47,7 +47,7 @@ If verifiable, generate the optimal Google Search query to verify the claim, res
 """
 
 
-VERDICT_PROMPT = """You are an expert, highly objective fact-checking AI. Evaluate the accuracy of the CLAIM based strictly on the provided SEARCH_RESULTS (snippets + source URLs).
+VERDICT_PROMPT = """You are an expert, highly objective fact-checking AI. Evaluate the accuracy of the CLAIM based strictly on the provided SEARCH_RESULTS (snippets + source URLs). Use the BACKGROUND_CONTEXT to resolve any pronouns or implied subjects in the CLAIM.
 
 Act as a ruthless evaluator. Do not rely on your internal knowledge. If the search results lack the answer, return INCONCLUSIVE.
 
@@ -115,6 +115,7 @@ async def fact_check_sentence(sentence: str, history: str) -> Dict[str, Any]:
         # 3. Verdict — schema-enforced JSON output.
         verdict_prompt = (
             f"{VERDICT_PROMPT}\n"
+            f"<BACKGROUND_CONTEXT>{history}</BACKGROUND_CONTEXT>\n"
             f"<CLAIM>{sentence}</CLAIM>\n"
             f"<SEARCH_RESULTS>{search_response}</SEARCH_RESULTS>"
         )
