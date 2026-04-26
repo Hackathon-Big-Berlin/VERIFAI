@@ -4,8 +4,12 @@ import logging
 import os
 from datetime import datetime, timezone
 from typing import Literal
+import os
+from datetime import datetime, timezone
+from typing import Literal
 
 from dotenv import load_dotenv
+from livekit import rtc
 from livekit import rtc
 from livekit.agents import (
     Agent,
@@ -17,12 +21,17 @@ from livekit.agents import (
     room_io,
 )
 from livekit.plugins import ai_coustics, gradium, silero
+from livekit.plugins import ai_coustics, gradium, silero
 
 from buffer import TranscriptBuffer
+from debate_coach import generate_debate_reply
 from debate_coach import generate_debate_reply
 from fact_checker import fact_check_sentence
 
 logger = logging.getLogger("agent")
+ENABLE_DEBATE_COACH = os.getenv("ENABLE_DEBATE_COACH", "1") == "1"
+DEBATE_SILENCE_SECONDS = 7
+GRADIUM_API_KEY_ENV = "GRADIUM_API_KEY"
 ENABLE_DEBATE_COACH = os.getenv("ENABLE_DEBATE_COACH", "1") == "1"
 DEBATE_SILENCE_SECONDS = 7
 GRADIUM_API_KEY_ENV = "GRADIUM_API_KEY"
@@ -35,6 +44,7 @@ def configure_logging() -> None:
         force=True,
     )
     logger.debug("logging configured", extra={"level": "DEBUG"})
+
 
 
 load_dotenv(".env.local")
@@ -83,6 +93,7 @@ def get_room_options(adaptation_mode: str) -> room_io.RoomOptions:
 server = AgentServer()
 
 
+
 @server.rtc_session(agent_name="my-agent")
 async def my_agent(ctx: JobContext):
     ctx.log_context_fields = {
@@ -111,10 +122,20 @@ async def my_agent(ctx: JobContext):
 
     app_mode: Literal["analysis", "debate"] = "analysis"
 
+
+    app_mode: Literal["analysis", "debate"] = "analysis"
+
     transcript_buffer = TranscriptBuffer()
     sentence_version = 0
     fact_check_queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
     published_verdicts: dict[str, str] = {}
+
+    debate_topic: str | None = None
+    debate_history: list[dict[str, str]] = []
+    debate_pending_finals: list[str] = []
+    debate_turn_counter = 0
+    debate_response_lock = asyncio.Lock()
+    debate_silence_task: asyncio.Task | None = None
 
     debate_topic: str | None = None
     debate_history: list[dict[str, str]] = []
@@ -132,10 +153,12 @@ async def my_agent(ctx: JobContext):
             try:
                 logger.info(
                     "[worker] received version=%s sentence=%r history_len=%s",
+                    "[worker] received version=%s sentence=%r history_len=%s",
                     version,
                     sentence[:120],
                     len(history),
                 )
+                result = await fact_check_sentence(sentence, history)
                 result = await fact_check_sentence(sentence, history)
                 logger.info(
                     "[worker] result version=%s status=%s verdict=%s",
@@ -150,12 +173,14 @@ async def my_agent(ctx: JobContext):
                 if result.get("status") != "success":
                     continue
 
+
                 claim = result.get("claim", "")
                 verdict = result.get("verdict", "")
                 norm = normalize_claim(claim)
                 if not norm:
                     continue
                 if published_verdicts.get(norm) == verdict:
+                    continue
                     continue
                 published_verdicts[norm] = verdict
 
@@ -177,6 +202,14 @@ async def my_agent(ctx: JobContext):
                     verdict,
                     claim[:80],
                 )
+                await ctx.room.local_participant.publish_data(
+                    flag_payload, reliable=True, topic="flag"
+                )
+                logger.info(
+                    "[worker] published flag verdict=%s claim=%r",
+                    verdict,
+                    claim[:80],
+                )
             except asyncio.CancelledError as e:
                 logger.warning(
                     "[worker] cancellation received version=%s cause=%r — keeping worker alive",
@@ -188,21 +221,27 @@ async def my_agent(ctx: JobContext):
             finally:
                 fact_check_queue.task_done()
 
-    async def publish_debate_turn(role: Literal["user", "model"], text: str):
+    async def publish_debate_turn(
+        role: Literal["user", "model"],
+        text: str,
+        sources: list[str] | None = None,
+    ):
         nonlocal debate_turn_counter
 
         debate_turn_counter += 1
         turn_id = f"{role}-{debate_turn_counter}"
         timestamp = datetime.now(timezone.utc).isoformat()
-        payload = json.dumps(
-            {
-                "type": "debate_turn",
-                "role": role,
-                "turnId": turn_id,
-                "text": text,
-                "timestamp": timestamp,
-            }
-        ).encode("utf-8")
+        payload_data: dict[str, object] = {
+            "type": "debate_turn",
+            "role": role,
+            "turnId": turn_id,
+            "text": text,
+            "timestamp": timestamp,
+        }
+        if sources:
+            payload_data["sources"] = sources
+
+        payload = json.dumps(payload_data).encode("utf-8")
 
         await ctx.room.local_participant.publish_data(payload, reliable=True, topic="debate")
 
@@ -248,7 +287,7 @@ async def my_agent(ctx: JobContext):
                 return
 
             try:
-                model_text = await generate_debate_reply(
+                model_reply = await generate_debate_reply(
                     topic=debate_topic,
                     conversation=debate_history,
                     latest_user_turn=user_turn_text,
@@ -257,6 +296,14 @@ async def my_agent(ctx: JobContext):
                 logger.exception("[debate] failed generating model response")
                 return
 
+            model_text = str(model_reply.get("response_text", "")).strip()
+            model_sources_raw = model_reply.get("sources", [])
+            model_sources = (
+                [str(url).strip() for url in model_sources_raw if str(url).strip()]
+                if isinstance(model_sources_raw, list)
+                else []
+            )
+
             if not model_text:
                 return
 
@@ -264,7 +311,7 @@ async def my_agent(ctx: JobContext):
             debate_history[:] = debate_history[-12:]
 
             try:
-                await publish_debate_turn("model", model_text)
+                await publish_debate_turn("model", model_text, sources=model_sources)
             except Exception:
                 logger.exception("[debate] failed publishing model turn")
 
@@ -332,6 +379,12 @@ async def my_agent(ctx: JobContext):
 
     def forward_transcript_to_data_channel(event):
         nonlocal sentence_version
+
+        if event.transcript and event.transcript.strip() and app_mode == "debate":
+            if event.is_final:
+                debate_pending_finals.append(event.transcript.strip())
+            # Any new transcript activity (interim or final) resets silence timer.
+            schedule_debate_silence_timer()
 
         if event.transcript and event.transcript.strip() and app_mode == "debate":
             if event.is_final:
@@ -521,6 +574,9 @@ async def my_agent(ctx: JobContext):
         # [MODIFIED]: Consolidated the fact_check_worker cancellation into the primary teardown block.
         fact_check_worker_task.cancel()
         await asyncio.gather(fact_check_worker_task, return_exceptions=True)
+        if debate_silence_task and not debate_silence_task.done():
+            debate_silence_task.cancel()
+            await asyncio.gather(debate_silence_task, return_exceptions=True)
         if debate_silence_task and not debate_silence_task.done():
             debate_silence_task.cancel()
             await asyncio.gather(debate_silence_task, return_exceptions=True)

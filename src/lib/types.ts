@@ -19,6 +19,7 @@ export type TranscriptSession = {
 export type FactCheckVerdict = "TRUE" | "FALSE" | "PARTIALLY TRUE" | "INCONCLUSIVE";
 
 // Find this interface in your types file and update the keys
+// Find this interface in your types file and update the keys
 export interface FactCheckFlag {
   type: "flag";
   claim: string;       // Changed from 'sentence'
