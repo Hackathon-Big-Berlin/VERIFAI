@@ -131,17 +131,17 @@ const Index = () => {
 
               {isDebate ? (
                 <div className="flex flex-col gap-1">
-                  <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-                    Debate
-                  </span>
-                  <button
-                    type="button"
-                    onClick={stopDebate}
-                    disabled={debateStage === "stopped"}
-                    className="inline-flex w-28 items-center justify-center rounded-sm border border-border bg-destructive px-2.5 py-1.5 font-mono text-xs uppercase tracking-wider text-destructive-foreground hover:opacity-90 disabled:opacity-50"
-                  >
-                    {debateStage === "stopped" ? "Stopped" : "Stop"}
-                  </button>
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                      Debate
+                    </span>
+                    <button
+                      type="button"
+                      onClick={stopDebate}
+                      disabled={debateStage === "stopped"}
+                      className="inline-flex w-28 items-center justify-center rounded-sm border border-border bg-destructive px-2.5 py-1.5 font-mono text-xs uppercase tracking-wider text-destructive-foreground hover:opacity-90 disabled:opacity-50"
+                    >
+                      {debateStage === "stopped" ? "Stopped" : "Stop"}
+                    </button>
                 </div>
               ) : null}
             </div>
@@ -160,6 +160,10 @@ const Index = () => {
             liveUserDraft={liveUserDraft}
             isLive={livekitStatus === "connected" && debateStage === "active"}
             isStopped={debateStage === "stopped"}
+            isIdle={isIdle}
+            isConnecting={livekitStatus === "connecting"}
+            onConnect={connect}
+            onDisconnect={disconnect}
             onStop={stopDebate}
           />
         ) : (

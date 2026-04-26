@@ -51,6 +51,7 @@ type DataChannelMessage =
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
 type AppMode = "normal" | "interview" | "debate";
+const AGENT_JOIN_TIMEOUT_MS = 30000;
 
 function formatTimestamp(date: Date): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -427,17 +428,55 @@ export function useLiveKitRoom(mode: AppMode = "normal") {
       setStatus("idle");
     });
 
+    const waitForAgentParticipant = async (
+      roomInstance: Room,
+      timeoutMs: number,
+    ): Promise<RemoteParticipant | null> => {
+      const existing = Array.from(roomInstance.remoteParticipants.values()).find(
+        (participant) => participant.kind === ParticipantKind.AGENT,
+      );
+      if (existing) return existing;
+
+      return await new Promise<RemoteParticipant | null>((resolve) => {
+        let settled = false;
+
+        const onParticipantConnected = (participant: RemoteParticipant) => {
+          if (participant.kind !== ParticipantKind.AGENT || settled) return;
+          settled = true;
+          clearTimeout(timeoutHandle);
+          roomInstance.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+          resolve(participant);
+        };
+
+        const timeoutHandle = window.setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          roomInstance.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+          resolve(null);
+        }, timeoutMs);
+
+        roomInstance.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+      });
+    };
+
     await room.connect(LIVEKIT_URL, LIVEKIT_TOKEN);
     console.log("[livekit] room.connect completed");
-    const agentParticipant = Array.from(room.remoteParticipants.values()).find(
+    roomRef.current = room;
+
+    const existingAgent = Array.from(room.remoteParticipants.values()).find(
       (participant) => participant.kind === ParticipantKind.AGENT,
     );
-    if (!agentParticipant) {
-      console.warn("[livekit] connected, but no agent participant has joined yet");
-    } else {
+    if (existingAgent) {
       void publishAppMode(modeRef.current);
+    } else {
+      void waitForAgentParticipant(room, AGENT_JOIN_TIMEOUT_MS).then((joinedAgent) => {
+        if (joinedAgent) {
+          void publishAppMode(modeRef.current);
+          return;
+        }
+        console.warn("[livekit] connected, but no agent participant has joined yet");
+      });
     }
-    roomRef.current = room;
     console.log("[livekit] room established as", room.localParticipant.identity);
     return room;
   }, [cleanupRemoteAudio, ensureAudioContainer, publishAppMode]);
@@ -481,13 +520,13 @@ export function useLiveKitRoom(mode: AppMode = "normal") {
     }
   }, [ensureRoomConnected, publishAppMode]);
 
-  // Fully leave the room so the agent's close_on_disconnect fires and the
-  // backend's delete_room_on_close=True tears the room down. That lets the
-  // next Connect create a fresh room and re-dispatch the agent automatically.
   const disconnect = useCallback(async () => {
     console.log("[livekit] disconnect requested");
-    await roomRef.current?.disconnect();
-    roomRef.current = null;
+    const room = roomRef.current;
+    if (room) {
+      await room.localParticipant.setMicrophoneEnabled(false);
+      console.log("[livekit] microphone disabled");
+    }
     setStatus("idle");
   }, []);
 

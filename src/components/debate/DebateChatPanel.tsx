@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { Mic, MicOff } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { DebateTurn } from "@/lib/types";
 
@@ -7,6 +8,10 @@ type DebateChatPanelProps = {
   liveUserDraft: string;
   isLive: boolean;
   isStopped: boolean;
+  isIdle?: boolean;
+  isConnecting?: boolean;
+  onConnect?: () => void;
+  onDisconnect?: () => void;
   onStop: () => void;
 };
 
@@ -15,9 +20,14 @@ export function DebateChatPanel({
   liveUserDraft,
   isLive,
   isStopped,
+  isIdle,
+  isConnecting,
+  onConnect,
+  onDisconnect,
   onStop,
 }: DebateChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const showConnect = typeof onConnect === "function" && typeof onDisconnect === "function";
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
@@ -88,6 +98,31 @@ export function DebateChatPanel({
           <div ref={bottomRef} aria-hidden="true" />
         </div>
       </ScrollArea>
+
+      {showConnect ? (
+        <div className="flex items-center justify-center border-t border-border bg-background px-4 py-4">
+          {isIdle ? (
+            <button
+              type="button"
+              onClick={onConnect}
+              aria-label="Connect"
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-md transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            >
+              <Mic className="h-6 w-6" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onDisconnect}
+              disabled={isConnecting}
+              aria-label="Disconnect"
+              className="flex h-14 w-14 items-center justify-center rounded-full bg-destructive text-destructive-foreground shadow-md transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:opacity-50"
+            >
+              <MicOff className="h-6 w-6" />
+            </button>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }
