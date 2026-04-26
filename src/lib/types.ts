@@ -21,10 +21,12 @@ export type FactCheckVerdict = "TRUE" | "FALSE" | "PARTIALLY TRUE" | "INCONCLUSI
 export interface FactCheckFlag {
   type: "flag";
   claim: string;
-  claim: string;
   verdict: string;
   reasoning: string;
   sources: string[];
+  // Tagged by the frontend (useLiveKitRoom) with the active session id when
+  // the flag arrives. Used by Meter to scope counts to the current session.
+  sessionId: string;
   // True when the verdict was likely informed by user-uploaded trusted
   // context (lexical-overlap heuristic on the backend; see
   // backend/src/context_loader.py:context_likely_relevant). Drives the
