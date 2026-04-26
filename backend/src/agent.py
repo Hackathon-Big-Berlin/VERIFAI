@@ -4,8 +4,12 @@ import logging
 import os
 from datetime import datetime, timezone
 from typing import Literal
+import os
+from datetime import datetime, timezone
+from typing import Literal
 
 from dotenv import load_dotenv
+from livekit import rtc
 from livekit import rtc
 from livekit.agents import (
     Agent,
@@ -17,12 +21,17 @@ from livekit.agents import (
     room_io,
 )
 from livekit.plugins import ai_coustics, gradium, silero
+from livekit.plugins import ai_coustics, gradium, silero
 
 from buffer import TranscriptBuffer
+from debate_coach import generate_debate_reply
 from debate_coach import generate_debate_reply
 from fact_checker import fact_check_sentence
 
 logger = logging.getLogger("agent")
+ENABLE_DEBATE_COACH = os.getenv("ENABLE_DEBATE_COACH", "1") == "1"
+DEBATE_SILENCE_SECONDS = 7
+GRADIUM_API_KEY_ENV = "GRADIUM_API_KEY"
 ENABLE_DEBATE_COACH = os.getenv("ENABLE_DEBATE_COACH", "1") == "1"
 DEBATE_SILENCE_SECONDS = 7
 GRADIUM_API_KEY_ENV = "GRADIUM_API_KEY"
@@ -37,9 +46,52 @@ def configure_logging() -> None:
     logger.debug("logging configured", extra={"level": "DEBUG"})
 
 
+
 load_dotenv(".env.local")
 
+def get_room_options(adaptation_mode: str) -> room_io.RoomOptions:
+    """
+    Generates the ai-coustics audio configuration based on the requested adaptation mode.
+    Defaults to 'focus' if an unknown mode is provided.
+    """
+    # Baseline: Noisy outdoor environment (Focus Mode)
+    model = ai_coustics.EnhancerModel.QUAIL_VF_L
+    enhancement_level = 0.65
+    speech_hold_duration = 0.05
+    sensitivity = 5.0
+    minimum_speech_duration = 0.03
+
+    if adaptation_mode == "multispeaker":
+        # Multi-speaker outdoor (Debate)
+        model = ai_coustics.EnhancerModel.QUAIL_L
+        enhancement_level = 0.65
+        
+    elif adaptation_mode == "studio":
+        # Quiet indoor (Studio)
+        model = ai_coustics.EnhancerModel.QUAIL_L
+        enhancement_level = 0.5
+        sensitivity = 6.0  # More sensitive to catch soft natural speech
+        
+    logger.info("[adaptation] ⚙️ Building config for mode: %s (model=%s, enhancement=%s)", 
+                adaptation_mode, model.name, enhancement_level)
+
+    return room_io.RoomOptions(
+        delete_room_on_close=True,
+        audio_input=room_io.AudioInputOptions(
+            noise_cancellation=ai_coustics.audio_enhancement(
+                model=model,
+                model_parameters=ai_coustics.ModelParameters(enhancement_level=enhancement_level),
+                vad_settings=ai_coustics.VadSettings(
+                    speech_hold_duration=speech_hold_duration,
+                    sensitivity=sensitivity,
+                    minimum_speech_duration=minimum_speech_duration,
+                ),
+            ),
+        ),
+    )
+
 server = AgentServer()
+
 
 
 @server.rtc_session(agent_name="my-agent")
@@ -48,9 +100,9 @@ async def my_agent(ctx: JobContext):
         "room": ctx.room.name,
     }
 
-    session = AgentSession(
-        stt=inference.STT(model="deepgram/nova-3", language="multi"),
-    )
+    # Asynchronous state management for adaptation modes
+    current_adaptation_mode = "focus"
+    mode_changed_event = asyncio.Event()
 
     gradium_api_key = os.getenv(GRADIUM_API_KEY_ENV)
     if not gradium_api_key:
@@ -70,10 +122,20 @@ async def my_agent(ctx: JobContext):
 
     app_mode: Literal["analysis", "debate"] = "analysis"
 
+
+    app_mode: Literal["analysis", "debate"] = "analysis"
+
     transcript_buffer = TranscriptBuffer()
     sentence_version = 0
     fact_check_queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
     published_verdicts: dict[str, str] = {}
+
+    debate_topic: str | None = None
+    debate_history: list[dict[str, str]] = []
+    debate_pending_finals: list[str] = []
+    debate_turn_counter = 0
+    debate_response_lock = asyncio.Lock()
+    debate_silence_task: asyncio.Task | None = None
 
     debate_topic: str | None = None
     debate_history: list[dict[str, str]] = []
@@ -91,10 +153,12 @@ async def my_agent(ctx: JobContext):
             try:
                 logger.info(
                     "[worker] received version=%s sentence=%r history_len=%s",
+                    "[worker] received version=%s sentence=%r history_len=%s",
                     version,
                     sentence[:120],
                     len(history),
                 )
+                result = await fact_check_sentence(sentence, history)
                 result = await fact_check_sentence(sentence, history)
                 logger.info(
                     "[worker] result version=%s status=%s verdict=%s",
@@ -109,12 +173,14 @@ async def my_agent(ctx: JobContext):
                 if result.get("status") != "success":
                     continue
 
+
                 claim = result.get("claim", "")
                 verdict = result.get("verdict", "")
                 norm = normalize_claim(claim)
                 if not norm:
                     continue
                 if published_verdicts.get(norm) == verdict:
+                    continue
                     continue
                 published_verdicts[norm] = verdict
 
@@ -128,6 +194,14 @@ async def my_agent(ctx: JobContext):
                     }
                 ).encode("utf-8")
 
+                await ctx.room.local_participant.publish_data(
+                    flag_payload, reliable=True, topic="flag"
+                )
+                logger.info(
+                    "[worker] published flag verdict=%s claim=%r",
+                    verdict,
+                    claim[:80],
+                )
                 await ctx.room.local_participant.publish_data(
                     flag_payload, reliable=True, topic="flag"
                 )
@@ -312,6 +386,12 @@ async def my_agent(ctx: JobContext):
             # Any new transcript activity (interim or final) resets silence timer.
             schedule_debate_silence_timer()
 
+        if event.transcript and event.transcript.strip() and app_mode == "debate":
+            if event.is_final:
+                debate_pending_finals.append(event.transcript.strip())
+            # Any new transcript activity (interim or final) resets silence timer.
+            schedule_debate_silence_timer()
+
         if event.is_final and event.transcript and event.transcript.strip():
             for sentence, history in transcript_buffer.process_chunk(event.transcript):
                 sentence_version += 1
@@ -345,29 +425,158 @@ async def my_agent(ctx: JobContext):
         pending_publishes.add(task)
         task.add_done_callback(pending_publishes.discard)
 
-    session.on("user_input_transcribed", forward_transcript_to_data_channel)
+
+    # Helper functions moved up so they can be referenced by the event loop.
+    async def publish_context_status(phase: str, kept: int = 0, total: int = 0, error: str | None = None) -> None:
+        payload: dict = {"type": "context_status", "phase": phase, "kept": kept, "total": total}
+        if error:
+            payload["error"] = error
+        try:
+            await ctx.room.local_participant.publish_data(
+                json.dumps(payload).encode("utf-8"),
+                reliable=True,
+                topic="context_status",
+            )
+            logger.info("[context] status -> %s kept=%s total=%s", phase, kept, total)
+        except Exception:
+            logger.exception("[context] failed to publish status")
+
+    async def handle_context_upload(mode: str, statements: list[str]) -> None:
+        if mode == "gospel":
+            context_state["text"] = "\n".join(statements)
+            logger.info("[context] gospel mode: %s statements stored", len(statements))
+            await publish_context_status("ready", kept=len(statements), total=len(statements))
+            return
+
+        # Nuanced: run each statement through the pipeline standalone, in
+        # parallel, and keep everything except FALSE verdicts (and crashes).
+        total = len(statements)
+        await publish_context_status("vetting", kept=0, total=total)
+
+        survivors: list[str] = []
+        # `as_completed` lets us push progress as each fact-check finishes,
+        # rather than waiting for the slowest one.
+        coros = [fact_check_sentence(stmt, "", "") for stmt in statements]
+        for fut in asyncio.as_completed(coros):
+            try:
+                result = await fut
+            except Exception:
+                logger.exception("[context] vetting task crashed")
+                await publish_context_status("vetting", kept=len(survivors), total=total)
+                continue
+
+            status = result.get("status")
+            verdict = result.get("verdict")
+            original = result.get("claim", "")
+
+            if status == "success" and verdict == "FALSE":
+                logger.info("[context] vetting filtered FALSE: %s", original[:80])
+            elif status == "error":
+                logger.warning("[context] vetting error for: %s", original[:80])
+            else:
+                # Keep TRUE, PARTIALLY TRUE, INCONCLUSIVE, and skipped.
+                survivors.append(original)
+
+            await publish_context_status("vetting", kept=len(survivors), total=total)
+
+        context_state["text"] = "\n".join(survivors)
+        logger.info(
+            "[context] nuanced vetting complete: %s/%s survived",
+            len(survivors),
+            total,
+        )
+        await publish_context_status("ready", kept=len(survivors), total=total)
+
+    def on_data_received(packet) -> None:
+        nonlocal current_adaptation_mode 
+
+        # 1. Decode the packet first so we can route based on the JSON payload
+        try:
+            payload = json.loads(packet.data.decode("utf-8"))
+        except Exception:
+            if packet.topic == "context":
+                logger.exception("[context] failed to parse incoming payload")
+            return
+
+        # 2. Handle audio adaptation mode switch
+        if "adaptation" in payload:
+            new_mode = payload.get("adaptation")
+            logger.info("[adaptation] 🔄 Received adaptation mode switch request: %s", new_mode)
+            
+            # Trigger the restart loop if the mode is actually different
+            if new_mode and new_mode != current_adaptation_mode:
+                current_adaptation_mode = new_mode
+                logger.info("[adaptation] ⚡ Signaling session restart...")
+                mode_changed_event.set()
+            return
+
+        # [DELETED]: Redundant JSON parsing logic that was causing crashes.
+        if packet.topic == "context":
+            if payload.get("type") != "context":
+                return
+            mode = payload.get("mode")
+            statements_field = payload.get("statements")
+            if mode not in ("gospel", "nuanced") or not isinstance(statements_field, list):
+                logger.warning("[context] invalid payload shape: %r", payload)
+                return
+            # Tolerate either a list of strings or a raw text blob via "text".
+            statements = [s.strip() for s in statements_field if isinstance(s, str) and s.strip()]
+            if not statements and isinstance(payload.get("text"), str):
+                statements = parse_context_text(payload["text"])
+            if not statements:
+                logger.warning("[context] upload had no usable statements")
+                return
+            # Schedule the async handler; data_received callback is sync.
+            task = asyncio.create_task(handle_context_upload(mode, statements))
+            pending_publishes.add(task)
+            task.add_done_callback(pending_publishes.discard)
 
     try:
+        # Join the room before starting the voice pipeline so the agent can receive
+        # browser microphone audio and publish transcript events back to the frontend.
         await ctx.connect()
 
         options = rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
         await ctx.room.local_participant.publish_track(audio_track, options)
 
-        await session.start(
-            agent=Agent(instructions="Transcribe user speech. Do not respond."),
-            room=ctx.room,
-            room_options=room_io.RoomOptions(
-                delete_room_on_close=True,
-                audio_input=room_io.AudioInputOptions(
-                    noise_cancellation=ai_coustics.audio_enhancement(
-                        model=ai_coustics.EnhancerModel.QUAIL_VF_L
-                    ),
-                ),
-            ),
-        )
+        # [NEW] The Session Restart Loop
+        while True:
+            mode_changed_event.clear()
+            logger.info("[adaptation] 🚀 Initializing session for mode: %s", current_adaptation_mode)
+
+            session = AgentSession(
+                stt=inference.STT(model="deepgram/nova-3", language="multi"),
+            )
+            session.on("user_input_transcribed", forward_transcript_to_data_channel)
+
+            options = get_room_options(current_adaptation_mode)
+
+            await session.start(
+                agent=Agent(instructions="Transcribe user speech. Do not respond."),
+                room=ctx.room,
+                room_options=options,
+            )
+            
+            await mode_changed_event.wait()
+            
+            logger.info("[adaptation] 🛑 Mode change requested. Tearing down current session...")
+            
+            if hasattr(session, 'aclose'):
+                await session.aclose()
+            elif hasattr(session, 'shutdown'):
+                await session.shutdown()
+
+    except asyncio.CancelledError:
+        logger.info("Agent session cancelled normally.")
+    except Exception:
+        logger.exception("Agent session failed")
     finally:
+        # [MODIFIED]: Consolidated the fact_check_worker cancellation into the primary teardown block.
         fact_check_worker_task.cancel()
         await asyncio.gather(fact_check_worker_task, return_exceptions=True)
+        if debate_silence_task and not debate_silence_task.done():
+            debate_silence_task.cancel()
+            await asyncio.gather(debate_silence_task, return_exceptions=True)
         if debate_silence_task and not debate_silence_task.done():
             debate_silence_task.cancel()
             await asyncio.gather(debate_silence_task, return_exceptions=True)
