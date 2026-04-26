@@ -39,6 +39,24 @@ def _get_tavily_api_key() -> str:
     return api_key
 
 
+# Lazy module-level singletons. Constructors are synchronous so there's no
+# race in single-threaded asyncio: any coroutine calling _clients() will
+# complete the init before another coroutine can interleave. Re-using the
+# same clients across calls avoids burning CPU + sockets on a fresh httpx
+# session per fact-check (matters most under nuanced vetting bursts).
+_tavily_client: AsyncTavilyClient | None = None
+_gemini_client: genai.Client | None = None
+
+
+def _clients() -> tuple[AsyncTavilyClient, genai.Client]:
+    global _tavily_client, _gemini_client
+    if _tavily_client is None:
+        _tavily_client = AsyncTavilyClient(api_key=_get_tavily_api_key())
+    if _gemini_client is None:
+        _gemini_client = genai.Client(api_key=_get_gemini_api_key())
+    return _tavily_client, _gemini_client
+
+
 GATEKEEPER_PROMPT = """Read BACKGROUND_CONTEXT only to resolve pronouns and understand what the speaker is referring to. Then evaluate the TARGET_SENTENCE.
 
 Return is_verifiable=true ONLY if the target sentence contains a factual claim that could be verified by web search (e.g., "Paris is the capital of France", "Cheetahs are the fastest land animal"). Set it to false for opinions ("I think it's nice"), filler ("hello", "you know"), incomplete fragments ("the average human needs"), and personal statements ("my friend Lucas is tall").
@@ -47,16 +65,26 @@ If verifiable, generate the optimal Google Search query to verify the claim, res
 """
 
 
-VERDICT_PROMPT = """You are an expert, highly objective fact-checking AI. Evaluate the accuracy of the CLAIM based strictly on the provided SEARCH_RESULTS (snippets + source URLs). Use the BACKGROUND_CONTEXT to resolve any pronouns or implied subjects in the CLAIM.
+VERDICT_PROMPT = """You are an expert, highly objective fact-checking AI. Evaluate the accuracy of the CLAIM.
 
-Act as a ruthless evaluator. Do not rely on your internal knowledge. If the search results lack the answer, return INCONCLUSIVE.
+If TRUSTED_CONTEXT is non-empty AND it covers the claim, treat it as authoritative — override SEARCH_RESULTS where they conflict. TRUSTED_CONTEXT contains pre-vetted facts the user has provided about the speaker or domain.
 
-Return a verdict, concise reasoning citing the search results, and 1-3 source URLs that support your verdict.
+If TRUSTED_CONTEXT does not cover the claim (or is empty), evaluate based on SEARCH_RESULTS only. If SEARCH_RESULTS lack the answer, return INCONCLUSIVE.
+
+Do not rely on your internal knowledge. Return a verdict, concise reasoning citing the evidence used, and 1-3 source URLs that support your verdict.
 """
 
 
-async def fact_check_sentence(sentence: str, history: str) -> Dict[str, Any]:
+async def fact_check_sentence(
+    sentence: str,
+    history: str,
+    trusted_context: str = "",
+) -> Dict[str, Any]:
     """Fact-check a single sentence with prior-sentence history for pronoun resolution.
+
+    `trusted_context` is the user-uploaded background facts (one statement per
+    line, already vetted in nuanced mode). When non-empty, the verdict prompt
+    treats it as authoritative — overrides web search for matters it covers.
 
     Always returns a dict with the same shape:
         {claim, status, verdict, reasoning, sources}
@@ -76,8 +104,7 @@ async def fact_check_sentence(sentence: str, history: str) -> Dict[str, Any]:
     }
 
     try:
-        tavily_client = AsyncTavilyClient(api_key=_get_tavily_api_key())
-        gemini_client = genai.Client(api_key=_get_gemini_api_key())
+        tavily_client, gemini_client = _clients()
     except Exception as e:
         logger.exception("Failed to initialize AI clients")
         result_data["reasoning"] = f"Failed to initialize AI clients: {e!s}"
@@ -115,6 +142,7 @@ async def fact_check_sentence(sentence: str, history: str) -> Dict[str, Any]:
         # 3. Verdict — schema-enforced JSON output.
         verdict_prompt = (
             f"{VERDICT_PROMPT}\n"
+            f"<TRUSTED_CONTEXT>{trusted_context}</TRUSTED_CONTEXT>\n"
             f"<BACKGROUND_CONTEXT>{history}</BACKGROUND_CONTEXT>\n"
             f"<CLAIM>{sentence}</CLAIM>\n"
             f"<SEARCH_RESULTS>{search_response}</SEARCH_RESULTS>"

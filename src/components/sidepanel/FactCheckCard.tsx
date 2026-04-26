@@ -74,7 +74,17 @@ export function FactCheckCard({ flag }: FactCheckCardProps) {
   return (
     <article className={cn("rounded-md border p-4 text-card-foreground shadow-sm transition-colors", styles.card)}>
       <div className="mb-3 flex items-start justify-between gap-3">
-        <Badge className={styles.badge}>{verdictLabel[verdict] ?? verdict}</Badge>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge className={styles.badge}>{verdictLabel[verdict] ?? verdict}</Badge>
+          {flag.used_trusted_context && (
+            <span
+              className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
+              title="This verdict was likely informed by your uploaded context."
+            >
+              from context
+            </span>
+          )}
+        </div>
         <span className="font-mono text-xs uppercase tracking-normal text-muted-foreground">{flag.type}</span>
       </div>
       <blockquote className={cn("border-l-2 pl-3 text-sm font-medium leading-6 text-foreground", styles.quote)}>
@@ -87,16 +97,34 @@ export function FactCheckCard({ flag }: FactCheckCardProps) {
       </p>
 
       {reasoningDone && flag.sources && flag.sources.length > 0 && (
-        <a
-          href={flag.sources[0]}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary underline-offset-4 hover:underline"
-        >
-          Source
-          <ExternalLink className="h-4 w-4" aria-hidden="true" />
-        </a>
+        <ul className="mt-4 flex flex-wrap gap-1.5">
+          {flag.sources.slice(0, 3).map((url, i) => (
+            <li key={`${url}-${i}`}>
+              <a
+                href={url}
+                target="_blank"
+                rel="noreferrer"
+                title={url}
+                className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-background px-2 py-1 text-xs font-medium text-foreground transition-colors hover:border-primary/50 hover:text-primary"
+              >
+                <ExternalLink className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+                <span>{sourceLabel(url)}</span>
+              </a>
+            </li>
+          ))}
+        </ul>
       )}
     </article>
   );
+}
+
+// Show a friendly hostname (e.g. "wikipedia.org") for the link text rather
+// than the raw URL or a generic "Source". Falls back to the original URL if
+// it can't be parsed.
+function sourceLabel(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
 }

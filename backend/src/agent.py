@@ -17,6 +17,7 @@ from livekit.agents import (
 from livekit.plugins import ai_coustics, silero, gradium
 
 from buffer import TranscriptBuffer
+from context_loader import context_likely_relevant, parse_context_text
 from fact_checker import fact_check_sentence
 
 logger = logging.getLogger("agent")
@@ -55,6 +56,16 @@ async def my_agent(ctx: JobContext):
     transcript_buffer = TranscriptBuffer()
     sentence_version = 0
     fact_check_queue: asyncio.Queue[tuple[int, str, str]] = asyncio.Queue()
+
+    # User-uploaded trusted context (gospel/nuanced). Mutated by the
+    # data_received handler when the frontend sends a "context" payload.
+    # Wrapped in a dict so the worker closure picks up live updates.
+    context_state: dict[str, str] = {"text": ""}
+    # Dedup key = normalized claim (lowercased, stripped of punctuation/space).
+    # Maps to the last verdict we published for that claim; we only re-publish
+    # when the verdict changes, and the frontend replaces the existing card.
+    # Matches the frontend's normalizeClaim() exactly.
+
     published_verdicts: dict[str, str] = {}
 
     def normalize_claim(text: str) -> str:
@@ -64,13 +75,15 @@ async def my_agent(ctx: JobContext):
         while True:
             version, sentence, history = await fact_check_queue.get()
             try:
+                trusted_context = context_state["text"]
                 logger.info(
-                    "[worker] received version=%s sentence=%r history_len=%s",
+                    "[worker] received version=%s sentence=%r history_len=%s trusted_len=%s",
                     version,
                     sentence[:120],
                     len(history),
+                    len(trusted_context),
                 )
-                result = await fact_check_sentence(sentence, history)
+                result = await fact_check_sentence(sentence, history, trusted_context)
                 logger.info(
                     "[worker] result version=%s status=%s verdict=%s",
                     version,
@@ -100,6 +113,7 @@ async def my_agent(ctx: JobContext):
                         "verdict": verdict,
                         "reasoning": result.get("reasoning", ""),
                         "sources": result.get("sources", []),
+                        "used_trusted_context": context_likely_relevant(claim, trusted_context),
                     }
                 ).encode("utf-8")
 
@@ -188,24 +202,142 @@ async def my_agent(ctx: JobContext):
 
     session.on("user_input_transcribed", forward_transcript_to_data_channel)
 
+    async def publish_context_status(phase: str, kept: int = 0, total: int = 0, error: str | None = None) -> None:
+        payload: dict = {"type": "context_status", "phase": phase, "kept": kept, "total": total}
+        if error:
+            payload["error"] = error
+        try:
+            await ctx.room.local_participant.publish_data(
+                json.dumps(payload).encode("utf-8"),
+                reliable=True,
+                topic="context_status",
+            )
+            logger.info("[context] status -> %s kept=%s total=%s", phase, kept, total)
+        except Exception:
+            logger.exception("[context] failed to publish status")
+
+    async def handle_context_upload(mode: str, statements: list[str]) -> None:
+        if mode == "gospel":
+            context_state["text"] = "\n".join(statements)
+            logger.info("[context] gospel mode: %s statements stored", len(statements))
+            await publish_context_status("ready", kept=len(statements), total=len(statements))
+            return
+
+        # Nuanced: run each statement through the pipeline standalone, in
+        # parallel, and keep everything except FALSE verdicts (and crashes).
+        total = len(statements)
+        await publish_context_status("vetting", kept=0, total=total)
+
+        survivors: list[str] = []
+        # `as_completed` lets us push progress as each fact-check finishes,
+        # rather than waiting for the slowest one.
+        coros = [fact_check_sentence(stmt, "", "") for stmt in statements]
+        for fut in asyncio.as_completed(coros):
+            try:
+                result = await fut
+            except Exception:
+                logger.exception("[context] vetting task crashed")
+                await publish_context_status("vetting", kept=len(survivors), total=total)
+                continue
+
+            status = result.get("status")
+            verdict = result.get("verdict")
+            original = result.get("claim", "")
+
+            if status == "success" and verdict == "FALSE":
+                logger.info("[context] vetting filtered FALSE: %s", original[:80])
+            elif status == "error":
+                logger.warning("[context] vetting error for: %s", original[:80])
+            else:
+                # Keep TRUE, PARTIALLY TRUE, INCONCLUSIVE, and skipped.
+                survivors.append(original)
+
+            await publish_context_status("vetting", kept=len(survivors), total=total)
+
+        context_state["text"] = "\n".join(survivors)
+        logger.info(
+            "[context] nuanced vetting complete: %s/%s survived",
+            len(survivors),
+            total,
+        )
+        await publish_context_status("ready", kept=len(survivors), total=total)
+
+    def on_data_received(packet) -> None:
+        if packet.topic != "context":
+            return
+        try:
+            payload = json.loads(packet.data.decode("utf-8"))
+        except Exception:
+            logger.exception("[context] failed to parse incoming payload")
+            return
+        if payload.get("type") != "context":
+            return
+        mode = payload.get("mode")
+        statements_field = payload.get("statements")
+        if mode not in ("gospel", "nuanced") or not isinstance(statements_field, list):
+            logger.warning("[context] invalid payload shape: %r", payload)
+            return
+        # Tolerate either a list of strings or a raw text blob via "text".
+        statements = [s.strip() for s in statements_field if isinstance(s, str) and s.strip()]
+        if not statements and isinstance(payload.get("text"), str):
+            statements = parse_context_text(payload["text"])
+        if not statements:
+            logger.warning("[context] upload had no usable statements")
+            return
+        # Schedule the async handler; data_received callback is sync.
+        task = asyncio.create_task(handle_context_upload(mode, statements))
+        pending_publishes.add(task)
+        task.add_done_callback(pending_publishes.discard)
+
     try:
         await ctx.connect()
         
         options = rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
         await ctx.room.local_participant.publish_track(audio_track, options)
 
+        # Subscribe to data-channel messages from the participant — used for
+        # user-uploaded trusted context.
+        ctx.room.on("data_received", on_data_received)
+
         await session.start(
-                agent=Agent(instructions="Transcribe user speech. Do not respond."),
-                room=ctx.room,
-                room_options=room_io.RoomOptions(
-                    delete_room_on_close=True,
-                    audio_input=room_io.AudioInputOptions(
-                        noise_cancellation=ai_coustics.audio_enhancement(
-                            model=ai_coustics.EnhancerModel.QUAIL_VF_L
+            agent=Agent(instructions="Transcribe user speech. Do not respond."),
+            room=ctx.room,
+            room_options=room_io.RoomOptions(
+                # Tear down the room when the user disconnects so the next
+                # Connect creates a fresh room and re-triggers agent dispatch
+                # (rooms otherwise linger ~5min on LiveKit Cloud and reconnecting
+                # joins the existing room without dispatching the agent).
+                delete_room_on_close=True,
+                audio_input=room_io.AudioInputOptions(
+                    noise_cancellation=ai_coustics.audio_enhancement(
+                        # QUAIL_VF_L  → best for single foreground speaker (our case)
+                        # QUAIL_L     → better if you ever need multi-speaker / diarization
+                        model=ai_coustics.EnhancerModel.QUAIL_VF_L,
+
+                        # enhancement_level controls suppression aggressiveness:
+                        #   0.5 = conservative — always preserves foreground speech, minimal artifacts
+                        #   0.8 = balanced    — optimal WER on challenging real-world data (recommended)
+                        #   1.0 = aggressive  — maximum suppression, risk of over-filtering quiet speech
+                        model_parameters=ai_coustics.ModelParameters(enhancement_level=0.8),
+
+                        # VAD settings tune how the model detects speech boundaries.
+                        vad_settings=ai_coustics.VadSettings(
+                            # How long (seconds) to keep VAD "on" after speech ends — prevents clipping
+                            # Range: 0.0–1.0s  |  Lower = tighter turn-taking, Higher = less cutoff
+                            speech_hold_duration=0.03,
+
+                            # How sensitive VAD is to speech vs noise
+                            # Range: 1.0–15.0  |  Higher = more sensitive (catches whispers, but more false triggers)
+                            sensitivity=6.0,
+
+                            # Minimum duration (seconds) before a segment is treated as speech
+                            # Range: 0.0–1.0s  |  Raise this to filter out very short utterances/clicks
+                            minimum_speech_duration=0.0,
                         ),
                     ),
                 ),
-            )
+            ),
+        )
     finally:
         fact_check_worker_task.cancel()
         await asyncio.gather(fact_check_worker_task, return_exceptions=True)
