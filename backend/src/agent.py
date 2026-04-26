@@ -19,7 +19,6 @@ from livekit.agents import (
 from livekit.plugins import ai_coustics, silero
 
 from debate_coach import compute_final_score, evaluate_user_turn, generate_model_turn
-from fact_checker import run_fact_check_pipeline
 
 logger = logging.getLogger("agent")
 MAX_CONTEXT_WORDS = 500
