@@ -1,49 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ParticipantKind, Room, RoomEvent, type RemoteParticipant } from "livekit-client";
-import type {
-  DebateFinalScore,
-  DebateTurn,
-  DebateTurnScore,
-  FactCheckFlag,
-  TranscriptSession,
-} from "@/lib/types";
+import type { TranscriptSession, FactCheckFlag } from "@/lib/types";
 
 // Shape of the JSON we publish from the Python agent (see backend/src/agent.py).
 // Frontend renders transcripts live; flag verdicts will land here too once Lukas's stream is wired.
 type DataChannelMessage =
   | { type: "transcript"; text: string; is_final: boolean }
   | { type: "flag"; claim: string; verdict: string; reasoning: string; sources: string[] }
-  | { type: "debate_turn"; role: "user" | "model"; turnId: string; text: string; timestamp: string }
-  | {
-      type: "debate_score";
-      turnId: string;
-      scores: {
-        logicalConsistency: number;
-        evidenceQuality: number;
-        rebuttalEffectiveness: number;
-        clarityStructure: number;
-        responsiveness: number;
-      };
-      strongClaims: Array<{ claim: string; strength: "strong"; reason: string }>;
-      weakClaims: Array<{ claim: string; strength: "weak"; reason: string }>;
-      coachingSuggestion: string;
-    }
-  | {
-      type: "debate_final_score";
-      overall: number;
-      scores: {
-        logicalConsistency: number;
-        evidenceQuality: number;
-        rebuttalEffectiveness: number;
-        clarityStructure: number;
-        responsiveness: number;
-      };
-      summary: string;
-    }
   | Record<string, unknown>;
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
-type AppMode = "analysis" | "debate";
 
 function formatTimestamp(date: Date): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -68,50 +34,12 @@ const LIVEKIT_TOKEN = import.meta.env.VITE_LIVEKIT_TOKEN as string | undefined;
 // Connect to a LiveKit room, publish the mic, and accumulate every Data Channel
 // transcript event into the *current* session block. Each Connect→Disconnect
 // cycle gets its own block; older blocks are preserved so the UI can stack them.
-export function useLiveKitRoom(mode: AppMode = "analysis") {
+export function useLiveKitRoom() {
   const roomRef = useRef<Room | null>(null);
-  const modeRef = useRef<AppMode>(mode);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<TranscriptSession[]>([]);
   const [flags, setFlags] = useState<FactCheckFlag[]>([]);
-  const [debateTurns, setDebateTurns] = useState<DebateTurn[]>([]);
-  const [debateScores, setDebateScores] = useState<DebateTurnScore[]>([]);
-  const [debateFinalScore, setDebateFinalScore] = useState<DebateFinalScore | null>(null);
-
-  const publishAppMode = useCallback(async (nextMode: AppMode) => {
-    const room = roomRef.current;
-    if (!room) return;
-
-    const payload = new TextEncoder().encode(
-      JSON.stringify({ type: "app_mode", mode: nextMode }),
-    );
-
-    try {
-      await room.localParticipant.publishData(payload, {
-        reliable: true,
-        topic: "control",
-      });
-      console.log("[livekit control] app mode published", nextMode);
-    } catch (err) {
-      console.warn("[livekit control] failed to publish app mode", err);
-    }
-  }, []);
-
-  useEffect(() => {
-    modeRef.current = mode;
-    if (mode === "analysis") {
-      setDebateTurns([]);
-      setDebateScores([]);
-      setDebateFinalScore(null);
-      return;
-    }
-    setFlags([]);
-  }, [mode]);
-
-  useEffect(() => {
-    void publishAppMode(mode);
-  }, [mode, publishAppMode]);
 
   // Establish the underlying LiveKit room connection once and keep it open
   // for the page lifetime. This avoids the dispatch cold-start delay every
@@ -194,10 +122,12 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
               pendingLength: currentSession.pendingText.length,
             });
             return nextSessions;
-          });
-          return;
+          });        
         }
 
+        // Real fact-check flags. Dedup by normalized claim so verdict
+        // changes for the same claim REPLACE the existing card instead of
+        // appending a duplicate.
         if (
           typeof message === "object" &&
           message !== null &&
@@ -205,7 +135,6 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
           message.type === "flag" &&
           typeof (message as { claim?: unknown }).claim === "string"
         ) {
-          if (modeRef.current !== "analysis") return;
           const flagMessage = message as FactCheckFlag;
           setFlags((prev) => {
             const incoming = normalizeClaim(flagMessage.claim);
@@ -218,78 +147,13 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
             }
             return [...prev, flagMessage];
           });
-          return;
-        }
-
-        if (
-          typeof message === "object" &&
-          message !== null &&
-          "type" in message &&
-          message.type === "debate_turn" &&
-          typeof (message as { turnId?: unknown }).turnId === "string" &&
-          typeof (message as { text?: unknown }).text === "string"
-        ) {
-          if (modeRef.current !== "debate") return;
-          const debateTurn = message as {
-            type: "debate_turn";
-            role: "user" | "model";
-            turnId: string;
-            text: string;
-            timestamp: string;
-          };
-          setDebateTurns((prev) => {
-            if (prev.some((turn) => turn.id === debateTurn.turnId)) return prev;
-            return [
-              ...prev,
-              {
-                id: debateTurn.turnId,
-                role: debateTurn.role,
-                text: debateTurn.text,
-                timestamp: debateTurn.timestamp,
-              },
-            ];
+        } else {
+          console.log("[livekit data] message ignored (unsupported shape)", {
+            topic,
+            from: participant?.identity,
+            message,
           });
-          return;
         }
-
-        if (
-          typeof message === "object" &&
-          message !== null &&
-          "type" in message &&
-          message.type === "debate_score" &&
-          typeof (message as { turnId?: unknown }).turnId === "string"
-        ) {
-          if (modeRef.current !== "debate") return;
-          const scoreUpdate = message as DebateTurnScore & { type: "debate_score" };
-          setDebateScores((prev) => {
-            const idx = prev.findIndex((item) => item.turnId === scoreUpdate.turnId);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = scoreUpdate;
-              return next;
-            }
-            return [...prev, scoreUpdate];
-          });
-          return;
-        }
-
-        if (
-          typeof message === "object" &&
-          message !== null &&
-          "type" in message &&
-          message.type === "debate_final_score" &&
-          typeof (message as { overall?: unknown }).overall === "number"
-        ) {
-          if (modeRef.current !== "debate") return;
-          setDebateFinalScore(message as DebateFinalScore);
-          return;
-        }
-
-        console.log("[livekit data] message ignored (unsupported shape)", {
-          topic,
-          from: participant?.identity,
-          message,
-        });
       },
     );
 
@@ -359,7 +223,6 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
           pendingText: "",
         },
       ]);
-      await publishAppMode(modeRef.current);
       setStatus("connected");
       console.log("[livekit] connect flow completed");
     } catch (err) {
@@ -368,7 +231,7 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
       setError(msg);
       setStatus("error");
     }
-  }, [ensureRoomConnected, publishAppMode]);
+  }, [ensureRoomConnected]);
 
   // Fully leave the room so the agent's close_on_disconnect fires and the
   // backend's delete_room_on_close=True tears the room down. That lets the
@@ -388,15 +251,5 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
     };
   }, []);
 
-  return {
-    status,
-    error,
-    sessions,
-    flags,
-    debateTurns,
-    debateScores,
-    debateFinalScore,
-    connect,
-    disconnect,
-  };
+  return { status, error, sessions, flags, connect, disconnect };
 }
