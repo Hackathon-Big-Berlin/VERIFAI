@@ -42,6 +42,7 @@ export interface DebateTurn {
   role: DebateRole;
   text: string;
   timestamp: string;
+  sources?: string[];
 }
 
 export interface DebateClaimAnnotation {

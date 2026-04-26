@@ -13,7 +13,7 @@ version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-genai" },
-    { name = "livekit-agents", extra = ["silero", "turn-detector"] },
+    { name = "livekit-agents", extra = ["gradium", "silero", "turn-detector"] },
     { name = "livekit-plugins-ai-coustics" },
     { name = "livekit-plugins-deepgram" },
     { name = "python-dotenv" },
@@ -30,7 +30,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "google-genai", specifier = ">=1.73.1" },
-    { name = "livekit-agents", extras = ["silero", "turn-detector"], specifier = "~=1.5" },
+    { name = "livekit-agents", extras = ["silero", "turn-detector", "gradium"], specifier = "~=1.5" },
     { name = "livekit-plugins-ai-coustics", specifier = "~=0.2" },
     { name = "livekit-plugins-deepgram", specifier = ">=1.5.6" },
     { name = "python-dotenv" },
@@ -1159,6 +1159,9 @@ codecs = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
+gradium = [
+    { name = "livekit-plugins-gradium" },
+]
 silero = [
     { name = "livekit-plugins-silero" },
 ]
@@ -1248,6 +1251,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/08/a0/b6927223dc5aee135c413e53c0dd723c26cd905d4167f9313fd593951957/livekit_plugins_deepgram-1.5.6.tar.gz", hash = "sha256:3d8e7a994aad7f32fe74f51408d7b1c792941ada76658f28a3fc9d52ba9a424b", size = 17642, upload-time = "2026-04-22T20:21:54.195Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e9/bc/6a48e32d051e5c34cdbf6ec524d0cb704a908344c690cb371e8aec9f7d4f/livekit_plugins_deepgram-1.5.6-py3-none-any.whl", hash = "sha256:a10cc85b191f1d83480876ddac4af01860bf4c83214edab2419abaafd8d528c2", size = 22487, upload-time = "2026-04-22T20:21:53.071Z" },
+]
+
+[[package]]
+name = "livekit-plugins-gradium"
+version = "1.5.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "livekit" },
+    { name = "livekit-agents" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b9/95/812d3c4289814f1b01099ba2d7b1ffb74591778447b770f7f8f4b6fa0dcc/livekit_plugins_gradium-1.5.6.tar.gz", hash = "sha256:3c94d21dc827e0d881b3adb219d60f6d4a2329514caeb2d57ece1dcef0fb34a5", size = 9174, upload-time = "2026-04-22T20:22:18.324Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a4/b0/fa7e0451e24a38ee491be8648b6416822318d5bc6f8a81e1a3a3c3aa5646/livekit_plugins_gradium-1.5.6-py3-none-any.whl", hash = "sha256:50ab14939b291b2d87c961aa5b44254e2e1c1ab3c08b6819185008383e471d03", size = 11429, upload-time = "2026-04-22T20:22:17.197Z" },
 ]
 
 [[package]]
