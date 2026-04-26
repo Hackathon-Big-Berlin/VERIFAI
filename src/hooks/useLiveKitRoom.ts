@@ -50,7 +50,7 @@ type DataChannelMessage =
   | Record<string, unknown>;
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
-type AppMode = "analysis" | "debate";
+type AppMode = "normal" | "interview" | "debate";
 
 function formatTimestamp(date: Date): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -75,15 +75,20 @@ const LIVEKIT_TOKEN = import.meta.env.VITE_LIVEKIT_TOKEN as string | undefined;
 // Connect to a LiveKit room, publish the mic, and accumulate every Data Channel
 // transcript event into the *current* session block. Each Connect→Disconnect
 // cycle gets its own block; older blocks are preserved so the UI can stack them.
-export function useLiveKitRoom(mode: AppMode = "analysis") {
+export function useLiveKitRoom(mode: AppMode = "normal") {
   const roomRef = useRef<Room | null>(null);
   const audioContainerRef = useRef<HTMLDivElement | null>(null);
   const audioElementsRef = useRef<Map<string, HTMLMediaElement>>(new Map());
   const modeRef = useRef<AppMode>(mode);
+  // Mirror activeSessionId into a ref so the data-channel callback (created
+  // once inside ensureRoomConnected) can tag flags with the current id without
+  // re-binding on every connect.
+  const activeSessionIdRef = useRef<string | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<TranscriptSession[]>([]);
   const [flags, setFlags] = useState<FactCheckFlag[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [debateTurns, setDebateTurns] = useState<DebateTurn[]>([]);
   const [debateScores, setDebateScores] = useState<DebateTurnScore[]>([]);
   const [debateFinalScore, setDebateFinalScore] = useState<DebateFinalScore | null>(null);
@@ -251,8 +256,11 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
           message.type === "flag" &&
           typeof (message as { claim?: unknown }).claim === "string"
         ) {
-          if (modeRef.current !== "analysis") return;
-          const flagMessage = message as FactCheckFlag;
+          if (modeRef.current === "debate") return;
+          const flagMessage = {
+            ...(message as Record<string, unknown>),
+            sessionId: activeSessionIdRef.current ?? "unknown_session",
+          } as FactCheckFlag;
           setFlags((prev) => {
             const incoming = normalizeClaim(flagMessage.claim);
             const idx = prev.findIndex((f) => normalizeClaim(f.claim) === incoming);
@@ -303,10 +311,13 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
           // When a user turn is committed, create a fresh session so the next
           // draft starts empty and accumulates fresh transcripts.
           if (debateTurn.role === "user") {
+            const nextId = newSessionId();
+            activeSessionIdRef.current = nextId;
+            setActiveSessionId(nextId);
             setSessions((previousSessions) => [
               ...previousSessions,
               {
-                id: newSessionId(),
+                id: nextId,
                 startedAt: formatTimestamp(new Date()),
                 text: "",
                 pendingText: "",
@@ -449,10 +460,13 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
       console.log("[livekit] microphone enabled");
       // Open a fresh transcript block for this Connect press. Older blocks
       // remain above it so users can review past sessions.
+      const nextId = newSessionId();
+      activeSessionIdRef.current = nextId;
+      setActiveSessionId(nextId);
       setSessions((previousSessions) => [
         ...previousSessions,
         {
-          id: newSessionId(),
+          id: nextId,
           startedAt: formatTimestamp(new Date()),
           text: "",
           pendingText: "",
@@ -505,6 +519,7 @@ export function useLiveKitRoom(mode: AppMode = "analysis") {
     error,
     sessions,
     flags,
+    activeSessionId,
     debateTurns,
     debateScores,
     debateFinalScore,

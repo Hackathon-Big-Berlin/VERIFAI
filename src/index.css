@@ -2,88 +2,89 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here.
 All colors MUST be HSL.
 */
 
 @layer base {
   :root {
-    --background: 210 20% 98%;
-    --foreground: 215 28% 9%;
+    /* Editorial cream + bold black + soft yellow accent */
+    --background: 45 33% 96%;
+    --foreground: 0 0% 6%;
 
     --card: 0 0% 100%;
-    --card-foreground: 215 28% 9%;
+    --card-foreground: 0 0% 6%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 215 28% 9%;
+    --popover-foreground: 0 0% 6%;
 
-    --primary: 166 84% 28%;
-    --primary-foreground: 0 0% 100%;
+    --primary: 0 0% 6%;
+    --primary-foreground: 45 33% 96%;
 
-    --secondary: 210 18% 94%;
-    --secondary-foreground: 215 28% 9%;
+    --secondary: 45 25% 92%;
+    --secondary-foreground: 0 0% 6%;
 
-    --muted: 210 16% 92%;
-    --muted-foreground: 215 13% 38%;
+    --muted: 45 20% 90%;
+    --muted-foreground: 0 0% 35%;
 
-    --accent: 166 50% 92%;
-    --accent-foreground: 166 84% 18%;
+    --accent: 54 100% 78%;
+    --accent-foreground: 0 0% 6%;
 
     --destructive: 0 72% 46%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 214 18% 84%;
-    --input: 214 18% 84%;
-    --ring: 166 84% 28%;
+    --border: 45 12% 82%;
+    --input: 45 12% 82%;
+    --ring: 0 0% 6%;
 
-    --radius: 0.5rem;
+    --radius: 0.25rem;
 
-    --sidebar-background: 210 20% 98%;
-    --sidebar-foreground: 215 28% 9%;
-    --sidebar-primary: 166 84% 28%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 166 50% 92%;
-    --sidebar-accent-foreground: 166 84% 18%;
-    --sidebar-border: 214 18% 84%;
-    --sidebar-ring: 166 84% 28%;
+    --sidebar-background: 45 33% 96%;
+    --sidebar-foreground: 0 0% 6%;
+    --sidebar-primary: 0 0% 6%;
+    --sidebar-primary-foreground: 45 33% 96%;
+    --sidebar-accent: 54 100% 78%;
+    --sidebar-accent-foreground: 0 0% 6%;
+    --sidebar-border: 45 12% 82%;
+    --sidebar-ring: 0 0% 6%;
   }
 
   .dark {
-    --background: 215 28% 9%;
-    --foreground: 210 20% 98%;
+    --background: 0 0% 6%;
+    --foreground: 45 33% 96%;
 
-    --card: 215 24% 13%;
-    --card-foreground: 210 20% 98%;
+    --card: 0 0% 10%;
+    --card-foreground: 45 33% 96%;
 
-    --popover: 215 24% 13%;
-    --popover-foreground: 210 20% 98%;
+    --popover: 0 0% 10%;
+    --popover-foreground: 45 33% 96%;
 
-    --primary: 166 76% 44%;
-    --primary-foreground: 215 28% 9%;
+    --primary: 54 100% 78%;
+    --primary-foreground: 0 0% 6%;
 
-    --secondary: 215 22% 16%;
-    --secondary-foreground: 210 20% 98%;
+    --secondary: 0 0% 14%;
+    --secondary-foreground: 45 33% 96%;
 
-    --muted: 215 18% 20%;
-    --muted-foreground: 210 12% 70%;
+    --muted: 0 0% 16%;
+    --muted-foreground: 45 10% 70%;
 
-    --accent: 166 35% 18%;
-    --accent-foreground: 166 76% 84%;
+    --accent: 54 100% 78%;
+    --accent-foreground: 0 0% 6%;
 
     --destructive: 0 68% 48%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 215 17% 24%;
-    --input: 215 17% 24%;
-    --ring: 166 76% 44%;
-    --sidebar-background: 215 28% 9%;
-    --sidebar-foreground: 210 20% 98%;
-    --sidebar-primary: 166 76% 44%;
-    --sidebar-primary-foreground: 215 28% 9%;
-    --sidebar-accent: 166 35% 18%;
-    --sidebar-accent-foreground: 166 76% 84%;
-    --sidebar-border: 215 17% 24%;
-    --sidebar-ring: 166 76% 44%;
+    --border: 0 0% 20%;
+    --input: 0 0% 20%;
+    --ring: 54 100% 78%;
+    --sidebar-background: 0 0% 6%;
+    --sidebar-foreground: 45 33% 96%;
+    --sidebar-primary: 54 100% 78%;
+    --sidebar-primary-foreground: 0 0% 6%;
+    --sidebar-accent: 0 0% 14%;
+    --sidebar-accent-foreground: 45 33% 96%;
+    --sidebar-border: 0 0% 20%;
+    --sidebar-ring: 54 100% 78%;
   }
 }
 
@@ -98,5 +99,10 @@ All colors MUST be HSL.
 
   body {
     @apply bg-background text-foreground antialiased;
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+
+  h1, h2, h3, h4, h5, h6, button, input, textarea, select {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   }
 }
