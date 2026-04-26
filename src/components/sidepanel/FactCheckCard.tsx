@@ -87,16 +87,33 @@ export function FactCheckCard({ flag }: FactCheckCardProps) {
       </p>
 
       {reasoningDone && flag.sources && flag.sources.length > 0 && (
-        <a
-          href={flag.sources[0]}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-primary underline-offset-4 hover:underline"
-        >
-          Source
-          <ExternalLink className="h-4 w-4" aria-hidden="true" />
-        </a>
+        <ul className="mt-4 flex flex-col gap-1.5">
+          {flag.sources.slice(0, 3).map((url, i) => (
+            <li key={`${url}-${i}`}>
+              <a
+                href={url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex max-w-full items-center gap-1.5 text-sm font-medium text-primary underline-offset-4 hover:underline"
+              >
+                <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" aria-hidden="true" />
+                <span className="truncate">{sourceLabel(url)}</span>
+              </a>
+            </li>
+          ))}
+        </ul>
       )}
     </article>
   );
+}
+
+// Show a friendly hostname (e.g. "wikipedia.org") for the link text rather
+// than the raw URL or a generic "Source". Falls back to the original URL if
+// it can't be parsed.
+function sourceLabel(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
 }
