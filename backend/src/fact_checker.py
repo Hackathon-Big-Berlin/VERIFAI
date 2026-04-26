@@ -126,6 +126,7 @@ async def fact_check_sentence(
         verdict_prompt = (
             f"{VERDICT_PROMPT}\n"
             f"<TRUSTED_CONTEXT>{trusted_context}</TRUSTED_CONTEXT>\n"
+            f"<BACKGROUND_CONTEXT>{history}</BACKGROUND_CONTEXT>\n"
             f"<CLAIM>{sentence}</CLAIM>\n"
             f"<SEARCH_RESULTS>{search_response}</SEARCH_RESULTS>"
         )

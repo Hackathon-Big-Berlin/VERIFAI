@@ -80,6 +80,8 @@ const LIVEKIT_TOKEN = import.meta.env.VITE_LIVEKIT_TOKEN as string | undefined;
 
 export function useLiveKitRoom() {
   const roomRef = useRef<Room | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
+  
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<TranscriptSession[]>([]);
@@ -124,8 +126,6 @@ export function useLiveKitRoom() {
           return;
         }
 
-        console.log("[livekit data]", { topic, from: participant?.identity, message });
-
         if (
           typeof message === "object" &&
           message !== null &&
@@ -162,7 +162,11 @@ export function useLiveKitRoom() {
           message.type === "flag" &&
           typeof (message as { claim?: unknown }).claim === "string"
         ) {
-          const flagMessage = message as FactCheckFlag;
+          const flagMessage = {
+            ...message,
+            sessionId: activeSessionIdRef.current || "unknown_session"
+          } as FactCheckFlag;
+
           setFlags((prev) => {
             const incoming = normalizeClaim(flagMessage.claim);
             const idx = prev.findIndex((f) => normalizeClaim(f.claim) === incoming);
@@ -268,12 +272,12 @@ export function useLiveKitRoom() {
       console.log("[livekit] room disconnected");
       roomRef.current = null;
       setStatus("idle");
+      // Intentionally NOT clearing activeSessionId here so the meter persists
     });
 
     await room.connect(LIVEKIT_URL, LIVEKIT_TOKEN);
     console.log("[livekit] room.connect completed");
     roomRef.current = room;
-    console.log("[livekit] room established as", room.localParticipant.identity);
     return room;
   }, []);
 
@@ -302,7 +306,6 @@ export function useLiveKitRoom() {
   const clearContext = useCallback(() => setContextStatus({ phase: "none" }), []);
 
   const connect = useCallback(async () => {
-    console.log("[livekit] connect requested");
     setStatus("connecting");
     setError(null);
 
@@ -354,12 +357,23 @@ export function useLiveKitRoom() {
       }
 
       await room.localParticipant.setMicrophoneEnabled(true);
-      console.log("[livekit] microphone enabled");
+      
+      const newId = newSessionId();
+      activeSessionIdRef.current = newId;
+      setActiveSessionId(newId);
+
+      setSessions((previousSessions) => [
+        ...previousSessions,
+        {
+          id: newId,
+          startedAt: formatTimestamp(new Date()),
+          text: "",
+          pendingText: "",
+        },
+      ]);
       setStatus("connected");
-      console.log("[livekit] connect flow completed");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error("[livekit] connect failed", err);
       setError(msg);
       setStatus("error");
     }
@@ -378,8 +392,11 @@ export function useLiveKitRoom() {
   }, [contextStatus]);
 
   const disconnect = useCallback(async () => {
-    console.log("[livekit] disconnect requested");
-    await roomRef.current?.disconnect();
+    try {
+      await roomRef.current?.disconnect();
+    } catch (err) {
+      console.error("[livekit] error disconnecting", err);
+    }
     roomRef.current = null;
     setStatus("idle");
     // Clearing flags + sessions is intentionally NOT done here — the user can

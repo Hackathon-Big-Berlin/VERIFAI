@@ -21,6 +21,7 @@ export type FactCheckVerdict = "TRUE" | "FALSE" | "PARTIALLY TRUE" | "INCONCLUSI
 export interface FactCheckFlag {
   type: "flag";
   claim: string;
+  claim: string;
   verdict: string;
   reasoning: string;
   sources: string[];
