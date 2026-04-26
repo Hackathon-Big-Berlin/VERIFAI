@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { DebateChatPanel } from "@/components/debate/DebateChatPanel";
 import { FactCheckSidebar } from "@/components/sidepanel/FactCheckSidebar";
 import { TranscriptPanel } from "@/components/transcript/TranscriptPanel";
+import { InterviewModeToggle } from "@/components/InterviewModeToggle";
 import { useLiveKitRoom } from "@/hooks/useLiveKitRoom";
 
 type AppMode = "analysis" | "debate";
@@ -73,16 +74,16 @@ const Index = () => {
         initial={{ y: -50, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ type: "spring", stiffness: 300, damping: 30 }}
-        className="fixed left-1/2 top-6 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full border border-white/10 bg-black/40 px-6 py-3 text-sm shadow-2xl backdrop-blur-xl"
+        className="fixed left-1/2 top-6 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full border border-white/10 bg-black/40 px-6 py-3 text-sm shadow-2xl backdrop-blur-xl w-max max-w-[95vw] overflow-x-auto overflow-y-hidden"
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <div className={`h-2.5 w-2.5 rounded-full ${livekitStatus === 'connected' ? 'bg-primary shadow-[0_0_10px_rgba(0,255,255,0.8)] animate-pulse' : 'bg-muted-foreground'}`} />
           <span className="font-semibold tracking-wide uppercase text-xs text-white/80">{livekitStatus}</span>
         </div>
         
-        <div className="mx-2 h-5 w-px bg-white/10" />
+        <div className="mx-2 h-5 w-px bg-white/10 flex-shrink-0" />
         
-        <div className="flex items-center gap-1 rounded-full bg-white/5 p-1">
+        <div className="flex items-center gap-1 rounded-full bg-white/5 p-1 flex-shrink-0">
           <button
             onClick={enterAnalysisMode}
             className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-all ${
@@ -105,9 +106,16 @@ const Index = () => {
           </button>
         </div>
 
-        <div className="mx-2 h-5 w-px bg-white/10" />
+        <div className="mx-2 h-5 w-px bg-white/10 flex-shrink-0" />
 
-        <div className="flex items-center gap-2">
+        {/* Interview Mode Toggle Integration */}
+        <div className="flex items-center flex-shrink-0">
+          <InterviewModeToggle />
+        </div>
+
+        <div className="mx-2 h-5 w-px bg-white/10 flex-shrink-0" />
+
+        <div className="flex items-center gap-2 flex-shrink-0">
           {mode === "debate" && debateStage === "active" && (
             <button
               onClick={stopDebate}
@@ -142,7 +150,7 @@ const Index = () => {
         )}
       </motion.div>
 
-      {/* Main Content Area - Z-index 10 to sit above glows but below fixed header */}
+      {/* Main Content Area */}
       <div className="relative z-10 flex w-full flex-1 flex-col gap-4 pt-20 lg:flex-row">
         <AnimatePresence mode="wait">
           {mode === "analysis" ? (
@@ -154,7 +162,6 @@ const Index = () => {
               transition={{ duration: 0.4, ease: "easeOut" }}
               className="flex w-full flex-1 flex-col gap-4 lg:flex-row"
             >
-              {/* Wrapping the panels in glassmorphism containers */}
               <div className="flex flex-1 flex-col overflow-hidden rounded-2xl border border-white/10 bg-black/20 shadow-2xl backdrop-blur-xl">
                 <TranscriptPanel sessions={sessions} flags={flags} isLive={livekitStatus === "connected"} />
               </div>

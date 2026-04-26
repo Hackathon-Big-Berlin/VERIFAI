@@ -1,6 +1,7 @@
 import { Fragment, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Meter } from "@/components/Meter";
 import { cn } from "@/lib/utils";
 import type { FactCheckFlag, FactCheckVerdict, TranscriptSession } from "@/lib/types";
 
@@ -75,20 +76,27 @@ function renderHighlightedTranscript(text: string, flags: FactCheckFlag[]): Reac
 }
 
 export function TranscriptPanel({ sessions, flags, isLive }: TranscriptPanelProps) {
+  const activeSessionId = isLive && sessions.length > 0 ? sessions[sessions.length - 1].id : null;
+
   return (
-    <section className="flex min-h-0 flex-1 flex-col bg-transparent border-r border-white/10">
-      <header className="flex items-center justify-between border-b border-white/10 bg-black/20 px-4 py-4 md:px-6 backdrop-blur-md">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-widest text-primary/80">Live transcript</p>
-          <h1 className="text-2xl font-bold leading-tight text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.3)] md:text-3xl">TruWord</h1>
+    <section className="flex min-h-0 flex-1 flex-col bg-transparent border-r border-white/10 relative">
+      <header className="flex flex-col border-b border-white/10 bg-black/20 p-4 md:p-6 backdrop-blur-md z-20">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-primary/80">Live transcript</p>
+            <h1 className="text-2xl font-bold leading-tight text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.3)] md:text-3xl">TruWord</h1>
+          </div>
+          <div className="flex items-center gap-2 text-sm text-white/60">
+            <span
+              className={`h-2.5 w-2.5 rounded-full ${isLive ? "bg-primary animate-pulse shadow-[0_0_10px_rgba(0,255,255,0.8)]" : "bg-muted-foreground/40"}`}
+              aria-hidden="true"
+            />
+            <span className="uppercase tracking-widest text-[10px] font-bold">{isLive ? "Listening" : "Idle"}</span>
+          </div>
         </div>
-        <div className="flex items-center gap-2 text-sm text-white/60">
-          <span
-            className={`h-2.5 w-2.5 rounded-full ${isLive ? "bg-primary animate-pulse shadow-[0_0_10px_rgba(0,255,255,0.8)]" : "bg-muted-foreground/40"}`}
-            aria-hidden="true"
-          />
-          <span className="uppercase tracking-widest text-[10px] font-bold">{isLive ? "Listening" : "Idle"}</span>
-        </div>
+
+        {/* Injected Glassmorphic Meter */}
+        <Meter flags={flags} activeSessionId={activeSessionId} />
       </header>
 
       <ScrollArea className="min-h-[28rem] flex-1 bg-black/10">
